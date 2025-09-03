@@ -9,6 +9,8 @@ import json
 import logging
 from datetime import datetime
 import os
+import time
+from pathlib import Path
 from dotenv import load_dotenv
 from mcp.server import Server
 
@@ -18,6 +20,7 @@ load_dotenv()
 # Configuration from environment variables
 FASTGTD_API_URL = os.getenv('FASTGTD_API_URL', 'http://localhost:8003')
 LOG_DIR = os.getenv('LOG_DIR', '/tmp/fastgtd_mcp_logs')
+LOG_RETENTION_DAYS = int(os.getenv('LOG_RETENTION_DAYS', '30'))
 
 # Authentication configuration
 FASTGTD_TOKEN = os.getenv('FASTGTD_TOKEN')
@@ -32,8 +35,42 @@ from mcp.types import (
     Tool,
 )
 
+def cleanup_old_logs(log_dir, days_old=30):
+    """Remove log files older than specified days. If days_old=0, delete all logs."""
+    try:
+        log_path = Path(log_dir)
+        if not log_path.exists():
+            return
+        
+        deleted_count = 0
+        
+        if days_old == 0:
+            # Delete all log files
+            for log_file in log_path.glob("*.log"):
+                log_file.unlink()
+                deleted_count += 1
+            if deleted_count > 0:
+                print(f"🧹 Cleared all {deleted_count} log files (LOG_RETENTION_DAYS=0)")
+        else:
+            # Delete files older than specified days
+            cutoff_time = time.time() - (days_old * 24 * 60 * 60)
+            
+            for log_file in log_path.glob("*.log"):
+                if log_file.stat().st_mtime < cutoff_time:
+                    log_file.unlink()
+                    deleted_count += 1
+            
+            if deleted_count > 0:
+                print(f"🧹 Cleaned up {deleted_count} old log files (older than {days_old} days)")
+    except Exception as e:
+        print(f"⚠️ Log cleanup failed: {e}")
+
 # Set up file logging
 os.makedirs(LOG_DIR, exist_ok=True)
+
+# Clean up old logs on startup
+cleanup_old_logs(LOG_DIR, days_old=LOG_RETENTION_DAYS)
+
 log_file = os.path.join(LOG_DIR, f"mcp_server_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
 # Configure logging to both file and console

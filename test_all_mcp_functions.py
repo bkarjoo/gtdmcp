@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive test script for all 23 MCP functions
+Comprehensive test script for all 22 MCP functions
 Tests all functions in logical groups with automatic cleanup
 """
 
@@ -10,7 +10,8 @@ import re
 import time
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load test environment configuration
+load_dotenv('.env.test')
 
 # Test results tracking
 test_results = {}
@@ -40,23 +41,15 @@ async def test_auth_functions():
     
     sys.path.append('/home/bkarjoo/dev/gtdmcp')
     try:
-        from fastgtd_mcp_server import get_auth_token, get_current_node_id
+        from fastgtd_mcp_server import get_auth_token
         
         # Test 1: get_auth_token
         try:
             token_result = await get_auth_token()
-            success = token_result.get("success", False) and token_result.get("auth_token")
+            success = isinstance(token_result, str) and len(token_result) > 0
             await log_test_result("get_auth_token", success, str(token_result) if not success else "")
         except Exception as e:
             await log_test_result("get_auth_token", False, str(e))
-        
-        # Test 2: get_current_node_id  
-        try:
-            node_result = await get_current_node_id()
-            success = node_result.get("success", False)
-            await log_test_result("get_current_node_id", success, str(node_result) if not success else "")
-        except Exception as e:
-            await log_test_result("get_current_node_id", False, str(e))
             
     except Exception as e:
         await log_test_result("auth_functions_import", False, str(e))
@@ -75,7 +68,7 @@ async def test_task_management_functions():
         # Test 3: add_task_to_inbox
         try:
             inbox_result = await add_task_to_inbox(
-                task_title="Test Inbox Task",
+                title="Test Inbox Task",
                 description="Test task for inbox"
             )
             success = inbox_result.get("success", False)
@@ -92,7 +85,7 @@ async def test_task_management_functions():
         # Test 4: add_task_to_current_node
         try:
             current_result = await add_task_to_current_node(
-                task_title="Test Current Node Task",
+                title="Test Current Node Task",
                 description="Test task for current node",
                 current_node_id=folder_id
             )
@@ -496,7 +489,7 @@ async def cleanup_test_data():
 async def main():
     print("🧪 FastGTD MCP Complete Function Test Suite")
     print("==========================================")
-    print("Testing all 23 MCP functions in one comprehensive test")
+    print("Testing all 22 MCP functions in one comprehensive test")
     
     # Run all test groups
     await test_auth_functions()
@@ -529,7 +522,7 @@ async def main():
     print(f"\n🎯 Overall Result: {'✅ SUCCESS' if overall_success else '❌ SOME TESTS FAILED'}")
     
     if overall_success:
-        print("🎉 ALL 23 MCP FUNCTIONS WORKING PERFECTLY!")
+        print("🎉 ALL 22 MCP FUNCTIONS WORKING PERFECTLY!")
     
     return overall_success
 

@@ -24,6 +24,7 @@ MANIFEST
 
 # Environment variables
 .env
+.env.test
 
 # Virtual environments
 .venv
@@ -43,6 +44,7 @@ venv.bak/
 *.log
 logs/
 mcplogs/
+test_mcplogs/
 
 # OS
 .DS_Store
