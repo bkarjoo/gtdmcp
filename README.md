@@ -16,11 +16,24 @@ Copy `.env.sample` to `.env` and configure:
 cp .env.sample .env
 ```
 
-Edit `.env`:
+Edit `.env` and choose your authentication method:
+
+### Option 1: Direct Token
 ```
 FASTGTD_API_URL=http://localhost:8003
+FASTGTD_TOKEN=your_jwt_token_here
 LOG_DIR=./mcplogs
 ```
+
+### Option 2: Username/Password (Recommended)
+```
+FASTGTD_API_URL=http://localhost:8003
+FASTGTD_USERNAME=user@example.com
+FASTGTD_PASSWORD=your_password
+LOG_DIR=./mcplogs
+```
+
+The MCP server will automatically authenticate using the FastGTD `/auth/login` endpoint when username/password are provided.
 
 ## Usage
 

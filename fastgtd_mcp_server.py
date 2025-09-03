@@ -19,6 +19,11 @@ load_dotenv()
 FASTGTD_API_URL = os.getenv('FASTGTD_API_URL', 'http://localhost:8003')
 LOG_DIR = os.getenv('LOG_DIR', '/tmp/fastgtd_mcp_logs')
 
+# Authentication configuration
+FASTGTD_TOKEN = os.getenv('FASTGTD_TOKEN')
+FASTGTD_USERNAME = os.getenv('FASTGTD_USERNAME') 
+FASTGTD_PASSWORD = os.getenv('FASTGTD_PASSWORD')
+
 from mcp.server.models import InitializationOptions
 from mcp.server import NotificationOptions
 from mcp.server.stdio import stdio_server
@@ -45,7 +50,53 @@ logger = logging.getLogger(__name__)
 logger.info(f"=== FastGTD MCP Server Starting - Log file: {log_file} ===")
 
 # Initialize MCP server
-server = Server("fastgtd-test")
+# Global authentication token cache
+_cached_token = None
+
+async def get_auth_token() -> str:
+    """Get authentication token - either from env var or by logging in"""
+    global _cached_token
+    
+    # If we have a direct token from env, use it
+    if FASTGTD_TOKEN:
+        return FASTGTD_TOKEN
+    
+    # If we have cached token, use it
+    if _cached_token:
+        return _cached_token
+        
+    # If we have username/password, login to get token
+    if FASTGTD_USERNAME and FASTGTD_PASSWORD:
+        import httpx
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{FASTGTD_API_URL}/auth/login",
+                    json={
+                        "email": FASTGTD_USERNAME,
+                        "password": FASTGTD_PASSWORD
+                    },
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    _cached_token = data["access_token"]
+                    logger.info("🔐 Successfully authenticated with FastGTD API")
+                    return _cached_token
+                else:
+                    logger.error(f"❌ Authentication failed: {response.status_code} - {response.text}")
+                    return ""
+        except Exception as e:
+            logger.error(f"❌ Authentication error: {e}")
+            return ""
+    
+    # No authentication configured
+    logger.warning("⚠️  No authentication configured - operations will use passed token")
+    return ""
+
+server = Server("fastgtd-mcp")
 
 async def add_task_to_inbox(title: str, description: str = "", priority: str = "medium", auth_token: str = "", current_node_id: str = "") -> dict:
     """Add a task to the user's default node (inbox)"""
