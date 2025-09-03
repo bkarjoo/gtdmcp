@@ -9,7 +9,16 @@ import json
 import logging
 from datetime import datetime
 import os
+from dotenv import load_dotenv
 from mcp.server import Server
+
+# Load environment variables
+load_dotenv()
+
+# Configuration from environment variables
+FASTGTD_API_URL = os.getenv('FASTGTD_API_URL', 'http://localhost:8003')
+LOG_DIR = os.getenv('LOG_DIR', '/tmp/fastgtd_mcp_logs')
+
 from mcp.server.models import InitializationOptions
 from mcp.server import NotificationOptions
 from mcp.server.stdio import stdio_server
@@ -19,9 +28,8 @@ from mcp.types import (
 )
 
 # Set up file logging
-log_dir = "/tmp/fastgtd_mcp_logs"
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, f"mcp_server_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+os.makedirs(LOG_DIR, exist_ok=True)
+log_file = os.path.join(LOG_DIR, f"mcp_server_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
 # Configure logging to both file and console
 logging.basicConfig(
@@ -53,7 +61,7 @@ async def add_task_to_inbox(title: str, description: str = "", priority: str = "
         print(f"   Auth token present: {bool(auth_token)}")
         
         # FastGTD API endpoint
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -84,7 +92,7 @@ async def add_task_to_inbox(title: str, description: str = "", priority: str = "
             # First, get the user's default node (inbox)
             if auth_token:
                 default_node_response = await client.get(
-                    "http://localhost:8003/settings/default-node",
+                    f"{FASTGTD_API_URL}/settings/default-node",
                     headers=headers
                 )
                 
@@ -143,7 +151,7 @@ async def add_folder_to_current_node(title: str, auth_token: str = "", current_n
             return {"success": False, "error": "No current node ID provided"}
         
         # FastGTD API endpoint
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
         
         # Create folder payload - folders are their own node type
         folder_payload = {
@@ -202,7 +210,7 @@ async def add_task_to_current_node(title: str, description: str = "", priority: 
             }
         
         # FastGTD API endpoint
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -278,7 +286,7 @@ async def add_note_to_current_node(title: str, content: str = "", auth_token: st
             }
         
         # FastGTD API endpoint
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -345,7 +353,7 @@ async def get_all_folders(auth_token: str = "", current_node_id: str = "") -> di
             return {"success": False, "error": "No authentication token provided"}
         
         # FastGTD API endpoint - get all notes (folders are notes with "Container folder" body)
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -410,7 +418,7 @@ async def get_root_folders(auth_token: str = "", current_node_id: str = "") -> d
             return {"success": False, "error": "No authentication token provided"}
         
         # FastGTD API endpoint - get folders with no parent (root level)
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -481,7 +489,7 @@ async def get_node_children(node_id: str, node_type: str = "", auth_token: str =
             return {"success": False, "error": "Node ID is required"}
         
         # FastGTD API endpoint - get children of specific node
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -573,7 +581,7 @@ async def get_folder_id(folder_name: str, auth_token: str = "", current_node_id:
             return {"success": False, "error": "Folder name is required"}
         
         # FastGTD API endpoint - get all notes (folders are notes with "Container folder" body)
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -678,7 +686,7 @@ async def add_task_to_node_id(node_id: str, task_title: str, description: str = 
             return {"success": False, "error": "Task title is required"}
         
         # FastGTD API endpoint
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -760,11 +768,11 @@ async def get_node_tree(root_id: str = "", max_depth: int = 10, auth_token: str 
         
         # FastGTD API endpoint for tree - the API expects root_id as path param or None
         if root_id:
-            url = f"http://localhost:8003/nodes/tree/{root_id}"
+            url = f"{FASTGTD_API_URL}/nodes/tree/{root_id}"
         else:
             # For root/no specific node, we'll need to call the root endpoint
             # First let's try to get nodes at the root level
-            url = "http://localhost:8003/nodes/"
+            url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -857,7 +865,7 @@ async def search_nodes(query: str, node_type: str = "", limit: int = 50, auth_to
             return {"success": False, "error": "Search query is required and must be at least 1 character"}
         
         # FastGTD API endpoint for searching nodes
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -934,7 +942,7 @@ async def create_task(title: str, description: str = "", priority: str = "medium
         print(f"   Auth token present: {bool(auth_token)}")
         
         # FastGTD API endpoint
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -975,7 +983,7 @@ async def create_task(title: str, description: str = "", priority: str = "medium
             # If no parent specified, get default node
             if not parent_id and not current_node_id and auth_token:
                 default_node_response = await client.get(
-                    "http://localhost:8003/settings/default-node",
+                    f"{FASTGTD_API_URL}/settings/default-node",
                     headers=headers
                 )
                 
@@ -1045,7 +1053,7 @@ async def update_task(task_id: str, title: str = "", description: str = "", prio
         print(f"   Auth token present: {bool(auth_token)}")
         
         # FastGTD API endpoint
-        url = f"http://localhost:8003/nodes/{task_id}"
+        url = f"{FASTGTD_API_URL}/nodes/{task_id}"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -1154,7 +1162,7 @@ async def complete_task(task_id: str, auth_token: str = "", current_node_id: str
             return {"success": False, "error": "Task ID is required"}
         
         # FastGTD API endpoint
-        url = f"http://localhost:8003/nodes/{task_id}"
+        url = f"{FASTGTD_API_URL}/nodes/{task_id}"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -1232,7 +1240,7 @@ async def delete_task(task_id: str, auth_token: str = "", current_node_id: str =
             return {"success": False, "error": "Task ID is required"}
         
         # FastGTD API endpoint
-        url = f"http://localhost:8003/nodes/{task_id}"
+        url = f"{FASTGTD_API_URL}/nodes/{task_id}"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -1299,7 +1307,7 @@ async def create_folder(title: str, parent_id: str = "", auth_token: str = "", c
             return {"success": False, "error": "Folder title is required"}
         
         # FastGTD API endpoint
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -1335,7 +1343,7 @@ async def create_folder(title: str, parent_id: str = "", auth_token: str = "", c
             # If no parent specified, get default node
             if not parent_id and not current_node_id and auth_token:
                 default_node_response = await client.get(
-                    "http://localhost:8003/settings/default-node",
+                    f"{FASTGTD_API_URL}/settings/default-node",
                     headers=headers
                 )
                 
@@ -1408,7 +1416,7 @@ async def move_node(node_id: str, new_parent_id: str = "", new_sort_order: int =
             return {"success": False, "error": "Authentication token is required"}
         
         # FastGTD API endpoint for moving nodes
-        url = "http://localhost:8003/nodes/move"
+        url = f"{FASTGTD_API_URL}/nodes/move"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -1500,8 +1508,8 @@ async def add_tag(node_id: str, tag_name: str, tag_description: str = "", tag_co
             return {"success": False, "error": "Authentication token is required"}
         
         # FastGTD API endpoints
-        create_tag_url = "http://localhost:8003/tags"
-        attach_tag_url = f"http://localhost:8003/nodes/{node_id}/tags"
+        create_tag_url = f"{FASTGTD_API_URL}/tags"
+        attach_tag_url = f"{FASTGTD_API_URL}/nodes/{node_id}/tags"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -1626,8 +1634,8 @@ async def remove_tag(node_id: str, tag_name: str, auth_token: str = "", current_
             return {"success": False, "error": "Authentication token is required"}
         
         # FastGTD API endpoints
-        get_tags_url = f"http://localhost:8003/nodes/{node_id}/tags"
-        detach_tag_url = f"http://localhost:8003/nodes/{node_id}/tags"
+        get_tags_url = f"{FASTGTD_API_URL}/nodes/{node_id}/tags"
+        detach_tag_url = f"{FASTGTD_API_URL}/nodes/{node_id}/tags"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
@@ -1743,7 +1751,7 @@ async def get_today_tasks(auth_token: str = "", current_node_id: str = "") -> di
         print(f"   Looking for tasks due between: {today_start} and {today_end}")
         
         # FastGTD API endpoint for getting nodes
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
         
         # Prepare headers
         headers = {
@@ -1830,7 +1838,7 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
         print(f"   Looking for tasks due before: {now.isoformat()}")
         
         # FastGTD API endpoint for getting nodes
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
         
         # Prepare headers
         headers = {
@@ -1926,7 +1934,7 @@ async def update_note(note_id: str, title: str = "", content: str = "", auth_tok
             return {"success": False, "error": "Must provide either title or content to update"}
         
         # FastGTD API endpoint for updating nodes
-        url = f"http://localhost:8003/nodes/{note_id}"
+        url = f"{FASTGTD_API_URL}/nodes/{note_id}"
         
         # Prepare headers
         headers = {
@@ -2009,7 +2017,7 @@ async def get_smart_folder_contents(smart_folder_id: str, limit: int = 100, offs
             return {"success": False, "error": "Smart folder ID is required"}
         
         # FastGTD API endpoint for getting smart folder contents
-        url = f"http://localhost:8003/nodes/{smart_folder_id}/contents"
+        url = f"{FASTGTD_API_URL}/nodes/{smart_folder_id}/contents"
         
         # Prepare headers
         headers = {
@@ -2118,7 +2126,7 @@ async def instantiate_template(template_id: str, name: str, parent_id: str = "",
             return {"success": False, "error": "Instance name is required"}
         
         # FastGTD API endpoint for instantiating templates
-        url = f"http://localhost:8003/nodes/templates/{template_id}/instantiate"
+        url = f"{FASTGTD_API_URL}/nodes/templates/{template_id}/instantiate"
         
         # Prepare headers
         headers = {
@@ -2196,7 +2204,7 @@ async def list_templates(category: str = "", limit: int = 50, offset: int = 0, a
             return {"success": False, "error": "No authentication token provided"}
         
         # FastGTD API endpoint for listing templates
-        url = "http://localhost:8003/nodes/templates"
+        url = f"{FASTGTD_API_URL}/nodes/templates"
         
         # Prepare headers
         headers = {
@@ -2292,7 +2300,7 @@ async def search_templates(query: str, category: str = "", limit: int = 50, auth
             return {"success": False, "error": "Search query is required and must be at least 1 character"}
         
         # FastGTD API endpoint for searching nodes (templates)
-        url = "http://localhost:8003/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
         
         # Prepare headers
         headers = {
