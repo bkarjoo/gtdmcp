@@ -448,12 +448,7 @@ async def add_note_to_node_id(node_id: str, title: str, content: str = "", auth_
         
         # Get auth token if not provided
         if not auth_token:
-            auth_token = os.getenv("ACCESS_TOKEN")
-            if not auth_token:
-                return {
-                    "success": False,
-                    "error": "No authentication token provided"
-                }
+            auth_token = await get_auth_token()
         
         print(f"📝 MCP DEBUG - add_note_to_node_id called:")
         print(f"   Node ID: {node_id}")
@@ -468,8 +463,7 @@ async def add_note_to_node_id(node_id: str, title: str, content: str = "", auth_
             }
         
         # FastGTD API endpoint
-        base_url = os.getenv("FASTGTD_BASE_URL", "http://localhost:8003")
-        url = f"{base_url}/nodes/"
+        url = f"{FASTGTD_API_URL}/nodes/"
     
     except Exception as e:
         print(f"❌ MCP ERROR in setup: {str(e)}")
