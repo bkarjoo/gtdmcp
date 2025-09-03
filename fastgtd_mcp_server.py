@@ -105,6 +105,10 @@ async def add_task_to_inbox(title: str, description: str = "", priority: str = "
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"🧪 MCP DEBUG - add_task_to_inbox called:")
         print(f"   Title: {title}")
         print(f"   Description: {description}")
@@ -247,6 +251,10 @@ async def add_task_to_current_node(title: str, description: str = "", priority: 
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"🧪 MCP DEBUG - add_task_to_current_node called:")
         print(f"   Title: {title}")
         print(f"   Description: {description}")
@@ -324,6 +332,10 @@ async def add_note_to_current_node(title: str, content: str = "", auth_token: st
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"📝 MCP DEBUG - add_note_to_current_node called:")
         print(f"   Title: {title}")
         print(f"   Content: {content}")
@@ -397,6 +409,10 @@ async def get_all_folders(auth_token: str = "", current_node_id: str = "") -> di
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"📁 MCP DEBUG - get_all_folders called:")
         print(f"   Auth token present: {bool(auth_token)}")
         
@@ -461,6 +477,10 @@ async def get_root_folders(auth_token: str = "", current_node_id: str = "") -> d
     """Get only root-level folders (folders with no parent)"""
     try:
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         print(f"📁 MCP DEBUG - get_root_folders called:")
         print(f"   Auth token present: {bool(auth_token)}")
@@ -527,6 +547,10 @@ async def get_node_children(node_id: str, node_type: str = "", auth_token: str =
     """Get immediate children of a specific node (optionally filtered by node type)"""
     try:
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         print(f"👶 MCP DEBUG - get_node_children called:")
         print(f"   Node ID: {node_id}")
@@ -620,6 +644,10 @@ async def get_folder_id(folder_name: str, auth_token: str = "", current_node_id:
     
     try:
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         print(f"🔍 MCP DEBUG - get_folder_id called:")
         print(f"   Folder name: {folder_name}")
@@ -720,6 +748,10 @@ async def add_task_to_node_id(node_id: str, task_title: str, description: str = 
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"🎯 MCP DEBUG - add_task_to_node_id called:")
         print(f"   Node ID: {node_id}")
         print(f"   Task title: {task_title}")
@@ -808,6 +840,10 @@ async def get_node_tree(root_id: str = "", max_depth: int = 10, auth_token: str 
     
     try:
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         print(f"🌳 MCP DEBUG - get_node_tree called:")
         print(f"   Root ID: {root_id}")
@@ -903,6 +939,10 @@ async def search_nodes(query: str, node_type: str = "", limit: int = 50, auth_to
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"🔍 MCP DEBUG - search_nodes called:")
         print(f"   Query: {query}")
         print(f"   Node type filter: {node_type}")
@@ -985,6 +1025,10 @@ async def create_task(title: str, description: str = "", priority: str = "medium
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"🧪 MCP DEBUG - create_task called:")
         print(f"   Title: {title}")
         print(f"   Description: {description}")
@@ -1050,21 +1094,15 @@ async def create_task(title: str, description: str = "", priority: str = "medium
             
             print(f"📡 API Response status: {response.status_code}")
             
-            if response.status_code == 201:
+            if response.status_code in [200, 201]:
                 task_data = response.json()
                 print(f"✅ Task created successfully: {task_data}")
                 
                 return {
                     "success": True,
                     "message": f"Task '{title}' created successfully",
-                    "task": {
-                        "id": task_data.get("id"),
-                        "title": task_data.get("title"),
-                        "description": description,
-                        "priority": priority,
-                        "status": "todo",
-                        "parent_id": task_data.get("parent_id")
-                    }
+                    "task_id": task_data.get("id"),
+                    "task": task_data
                 }
             else:
                 error_msg = f"Failed to create task: HTTP {response.status_code}"
@@ -1094,6 +1132,10 @@ async def update_task(task_id: str, title: str = "", description: str = "", prio
     
     try:
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         print(f"🧪 MCP DEBUG - update_task called:")
         print(f"   Task ID: {task_id}")
@@ -1205,6 +1247,10 @@ async def complete_task(task_id: str, auth_token: str = "", current_node_id: str
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"✅ MCP DEBUG - complete_task called:")
         print(f"   Task ID: {task_id}")
         print(f"   Auth token present: {bool(auth_token)}")
@@ -1283,6 +1329,10 @@ async def delete_task(task_id: str, auth_token: str = "", current_node_id: str =
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"🗑️ MCP DEBUG - delete_task called:")
         print(f"   Task ID: {task_id}")
         print(f"   Auth token present: {bool(auth_token)}")
@@ -1347,6 +1397,10 @@ async def create_folder(title: str, parent_id: str = "", auth_token: str = "", c
     
     try:
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         print(f"📁 MCP DEBUG - create_folder called:")
         print(f"   Title: {title}")
@@ -1454,6 +1508,10 @@ async def move_node(node_id: str, new_parent_id: str = "", new_sort_order: int =
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"🔄 MCP DEBUG - move_node called:")
         print(f"   Node ID: {node_id}")
         print(f"   New Parent ID: {new_parent_id}")
@@ -1541,6 +1599,10 @@ async def add_tag(node_id: str, tag_name: str, tag_description: str = "", tag_co
     
     try:
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         print(f"🏷️ MCP DEBUG - add_tag called:")
         print(f"   Node ID: {node_id}")
@@ -1670,6 +1732,10 @@ async def remove_tag(node_id: str, tag_name: str, auth_token: str = "", current_
     try:
         import httpx
         
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
         print(f"🏷️❌ MCP DEBUG - remove_tag called:")
         print(f"   Node ID: {node_id}")
         print(f"   Tag Name: {tag_name}")
@@ -1791,7 +1857,7 @@ async def get_today_tasks(auth_token: str = "", current_node_id: str = "") -> di
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            auth_token = await get_auth_token()
         
         # Get today's date in ISO format (start and end of day)
         from datetime import datetime, timezone
@@ -1817,6 +1883,10 @@ async def get_today_tasks(auth_token: str = "", current_node_id: str = "") -> di
         }
         
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 url,
@@ -1880,7 +1950,7 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            auth_token = await get_auth_token()
         
         # Get current datetime
         from datetime import datetime, timezone
@@ -1904,6 +1974,10 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
         }
         
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 url,
@@ -1975,7 +2049,7 @@ async def update_note(note_id: str, title: str = "", content: str = "", auth_tok
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            auth_token = await get_auth_token()
         
         if not note_id:
             return {"success": False, "error": "Note ID is required"}
@@ -2009,6 +2083,10 @@ async def update_note(note_id: str, title: str = "", content: str = "", auth_tok
         print(f"   Update payload: {update_data}")
         
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         async with httpx.AsyncClient() as client:
             response = await client.put(
                 url,
@@ -2062,7 +2140,7 @@ async def get_smart_folder_contents(smart_folder_id: str, limit: int = 100, offs
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            auth_token = await get_auth_token()
         
         if not smart_folder_id:
             return {"success": False, "error": "Smart folder ID is required"}
@@ -2083,6 +2161,10 @@ async def get_smart_folder_contents(smart_folder_id: str, limit: int = 100, offs
         }
         
         import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 url,
