@@ -266,7 +266,7 @@ async def test_note_functions():
     
     sys.path.append('/home/bkarjoo/dev/gtdmcp')
     try:
-        from fastgtd_mcp_server import add_note_to_current_node, update_note, create_folder
+        from fastgtd_mcp_server import add_note_to_current_node, add_note_to_node_id, update_note, create_folder
         
         # Create a folder for note tests
         folder_result = await create_folder(title="Folder for Note Test")
@@ -285,6 +285,19 @@ async def test_note_functions():
         except Exception as e:
             await log_test_result("add_note_to_current_node", False, str(e))
             note_id = None
+        
+        # Test 18b: add_note_to_node_id
+        try:
+            note_by_id_result = await add_note_to_node_id(
+                node_id=folder_id,
+                title="Test Note by Node ID", 
+                content="Test note content created via node ID"
+            )
+            success = note_by_id_result.get("success", False)
+            note_by_id_id = note_by_id_result.get("note_id") if success else None
+            await log_test_result("add_note_to_node_id", success, str(note_by_id_result) if not success else "")
+        except Exception as e:
+            await log_test_result("add_note_to_node_id", False, str(e))
         
         # Test 19: update_note
         if note_id:

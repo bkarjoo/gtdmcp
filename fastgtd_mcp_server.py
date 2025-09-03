@@ -441,6 +441,92 @@ async def add_note_to_current_node(title: str, content: str = "", auth_token: st
             "error": f"Failed to add note to current node: {str(e)}"
         }
 
+async def add_note_to_node_id(node_id: str, title: str, content: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
+    """Add a note to a specific node by its ID"""
+    try:
+        import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = os.getenv("ACCESS_TOKEN")
+            if not auth_token:
+                return {
+                    "success": False,
+                    "error": "No authentication token provided"
+                }
+        
+        print(f"📝 MCP DEBUG - add_note_to_node_id called:")
+        print(f"   Node ID: {node_id}")
+        print(f"   Title: {title}")
+        print(f"   Content: {content}")
+        print(f"   Auth token present: {bool(auth_token)}")
+        
+        if not node_id:
+            return {
+                "success": False,
+                "error": "Node ID is required to add note to specific node"
+            }
+        
+        # FastGTD API endpoint
+        base_url = os.getenv("FASTGTD_BASE_URL", "http://localhost:8003")
+        url = f"{base_url}/nodes/"
+    
+    except Exception as e:
+        print(f"❌ MCP ERROR in setup: {str(e)}")
+        return {
+            "success": False,
+            "error": f"MCP tool setup failed: {str(e)}"
+        }
+    
+    # Create note payload for unified node system
+    note_payload = {
+        "node_type": "note",
+        "title": title,
+        "parent_id": node_id,  # Use provided node_id as parent
+        "note_data": {
+            "body": content
+        }
+    }
+    
+    # Prepare headers
+    headers = {"Content-Type": "application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    
+    print(f"📤 Final note payload: {note_payload}")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                url,
+                json=note_payload,
+                headers=headers
+            )
+            
+            print(f"📥 API Response Status: {response.status_code}")
+            print(f"📥 API Response Text: {response.text}")
+            
+            if response.status_code == 200:
+                note_data = response.json()
+                return {
+                    "success": True,
+                    "message": f"Successfully added note '{title}' to node {node_id}",
+                    "note_id": note_data.get("id"),
+                    "note": note_data
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Failed to add note: HTTP {response.status_code}",
+                    "details": response.text
+                }
+                
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to add note to node {node_id}: {str(e)}"
+        }
+
 async def get_all_folders(auth_token: str = "", current_node_id: str = "") -> dict:
     """Get all folder names in the user's node tree for AI to help find the right folder"""
     try:
@@ -2554,6 +2640,7 @@ TOOL_HANDLERS = {
     "add_task_to_current_node": add_task_to_current_node,
     "add_folder_to_current_node": add_folder_to_current_node,
     "add_note_to_current_node": add_note_to_current_node,
+    "add_note_to_node_id": add_note_to_node_id,
     "get_all_folders": get_all_folders,
     "get_root_folders": get_root_folders,
     "get_node_children": get_node_children,
@@ -2629,6 +2716,19 @@ async def handle_list_tools():
                     "content": {"type": "string", "description": "Note content/body (optional)"}
                 },
                 "required": ["title"]
+            }
+        ),
+        Tool(
+            name="add_note_to_node_id",
+            description="Add a new note to a specific node by its ID - allows programmatic note creation without relying on current node context",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string", "description": "ID of the parent node to add the note to (required)"},
+                    "title": {"type": "string", "description": "Note title (required)"},
+                    "content": {"type": "string", "description": "Note content/body (optional)"}
+                },
+                "required": ["node_id", "title"]
             }
         ),
         Tool(
