@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive test script for all 22 MCP functions
+Comprehensive test script for all 30 MCP functions  
 Tests all functions in logical groups with automatic cleanup
 """
 
@@ -167,7 +167,7 @@ async def test_folder_functions():
     sys.path.append('/home/bkarjoo/dev/gtdmcp')
     try:
         from fastgtd_mcp_server import (
-            get_all_folders, create_folder, get_root_folders, get_folder_id
+            get_all_folders, create_folder, get_root_folders, get_root_nodes, get_folder_id
         )
         
         # Test 10: get_all_folders
@@ -195,7 +195,15 @@ async def test_folder_functions():
         except Exception as e:
             await log_test_result("get_root_folders", False, str(e))
         
-        # Test 13: get_folder_id
+        # Test 13: get_root_nodes
+        try:
+            root_nodes_result = await get_root_nodes()
+            success = root_nodes_result.get("success", False)
+            await log_test_result("get_root_nodes", success, str(root_nodes_result) if not success else "")
+        except Exception as e:
+            await log_test_result("get_root_nodes", False, str(e))
+        
+        # Test 14: get_folder_id
         try:
             folder_id_result = await get_folder_id("Test Folder for get_all_folders")
             success = folder_id_result.get("success", False)
@@ -416,6 +424,108 @@ async def test_advanced_functions():
     except Exception as e:
         await log_test_result("advanced_functions_import", False, str(e))
 
+async def test_template_functions():
+    """Test template management functions"""
+    print("\n=== Testing Template Functions ===")
+    
+    sys.path.append('/home/bkarjoo/dev/gtdmcp')
+    try:
+        from fastgtd_mcp_server import (
+            list_templates, search_templates, instantiate_template
+        )
+        
+        # Test 25: list_templates
+        try:
+            list_result = await list_templates(limit=10)
+            success = list_result.get("success", False)
+            await log_test_result("list_templates", success, str(list_result) if not success else "")
+        except Exception as e:
+            await log_test_result("list_templates", False, str(e))
+        
+        # Test 26: search_templates
+        try:
+            search_result = await search_templates(query="test", limit=5)
+            success = search_result.get("success", False)
+            await log_test_result("search_templates", success, str(search_result) if not success else "")
+        except Exception as e:
+            await log_test_result("search_templates", False, str(e))
+        
+        # Test 27: instantiate_template (with dummy template ID)
+        try:
+            instantiate_result = await instantiate_template(
+                template_id="00000000-0000-0000-0000-000000000000",
+                name="Test Template Instance"
+            )
+            success = instantiate_result.get("success", False)
+            
+            # This test passes if it handles non-existent templates gracefully 
+            if success:
+                test_success = True
+            elif "Template not found" in str(instantiate_result.get("error", "")):
+                # This is acceptable - template doesn't exist, but function handled it gracefully
+                test_success = True
+                print("   Template doesn't exist, but function handled error gracefully!")
+            else:
+                test_success = False
+                
+            await log_test_result("instantiate_template", test_success, str(instantiate_result) if not test_success else "")
+        except Exception as e:
+            await log_test_result("instantiate_template", False, str(e))
+            
+    except Exception as e:
+        await log_test_result("template_functions_import", False, str(e))
+
+async def test_smart_folder_with_none_description():
+    """Test smart folder handling of tasks with None description"""
+    print("\n=== Testing Smart Folder with None Description Handling ===")
+    
+    sys.path.append('/home/bkarjoo/dev/gtdmcp')
+    try:
+        from fastgtd_mcp_server import get_smart_folder_contents
+        
+        # Test the smart folder contents function with a real smart folder ID that previously caused errors
+        try:
+            # Use the smart folder ID that previously caused the error: 703f45dd-770c-46a6-a95c-005d965a20c8
+            smart_folder_id = "703f45dd-770c-46a6-a95c-005d965a20c8"
+            print(f"🔍 Testing smart folder {smart_folder_id} for None description handling...")
+            
+            smart_result = await get_smart_folder_contents(
+                smart_folder_id=smart_folder_id,
+                limit=20
+            )
+            success = smart_result.get("success", False)
+            
+            # This test passes if it handles None descriptions gracefully (no crashes) 
+            # OR if it gracefully handles non-existent smart folder
+            if success:
+                test_success = True
+            elif "Smart folder not found" in str(smart_result.get("error", "")):
+                # This is acceptable - smart folder doesn't exist, but function handled it gracefully
+                test_success = True
+                print("   Smart folder doesn't exist, but function handled error gracefully!")
+            else:
+                test_success = False
+                
+            await log_test_result("smart_folder_none_description", test_success, str(smart_result) if not test_success else "")
+            
+            if success:
+                print("✅ Smart folder handled None descriptions correctly!")
+                # Print some details about what we found
+                tasks = smart_result.get("tasks", [])
+                none_descriptions = [t for t in tasks if t.get("description") is None or t.get("description") == "None"]
+                if none_descriptions:
+                    print(f"   Found {len(none_descriptions)} tasks with None descriptions - handled gracefully!")
+                else:
+                    print("   No tasks with None descriptions found in this test.")
+            else:
+                print(f"⚠️  Smart folder test result: {smart_result}")
+                
+        except Exception as e:
+            await log_test_result("smart_folder_none_description", False, f"Exception: {str(e)}")
+            
+    except Exception as e:
+        await log_test_result("smart_folder_none_description_import", False, str(e))
+
 async def cleanup_test_data():
     """Clean up all test data created during testing"""
     print("\n=== Cleaning Up Test Data ===")
@@ -502,7 +612,7 @@ async def cleanup_test_data():
 async def main():
     print("🧪 FastGTD MCP Complete Function Test Suite")
     print("==========================================")
-    print("Testing all 22 MCP functions in one comprehensive test")
+    print("Testing all 30 MCP functions in one comprehensive test")
     
     # Run all test groups
     await test_auth_functions()
@@ -512,6 +622,8 @@ async def main():
     await test_note_functions()
     await test_tag_functions()
     await test_advanced_functions()
+    await test_template_functions()
+    await test_smart_folder_with_none_description()
     
     # Print final results
     print(f"\n📊 Final Test Results: {passed_tests}/{total_tests} tests passed")

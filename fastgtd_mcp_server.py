@@ -660,6 +660,91 @@ async def get_root_folders(auth_token: str = "", current_node_id: str = "") -> d
             "error": f"Failed to get root folders: {str(e)}"
         }
 
+async def get_root_nodes(auth_token: str = "", current_node_id: str = "") -> dict:
+    """Get all root-level nodes (all node types with no parent) - tasks, notes, folders, smart folders, templates"""
+    try:
+        import httpx
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
+        print(f"🌳 MCP DEBUG - get_root_nodes called:")
+        print(f"   Auth token present: {bool(auth_token)}")
+        
+        if not auth_token:
+            return {"success": False, "error": "No authentication token provided"}
+        
+        # FastGTD API endpoint - get all nodes with no parent (root level)
+        url = f"{FASTGTD_API_URL}/nodes/"
+    
+    except Exception as e:
+        print(f"❌ MCP ERROR in setup: {str(e)}")
+        return {
+            "success": False,
+            "error": f"MCP tool setup failed: {str(e)}"
+        }
+    
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            # Get all root nodes (no node_type filter to get everything)
+            response = await client.get(
+                url,
+                headers=headers,
+                params={"limit": 1000}  # No node_type filter - get all types
+            )
+            
+            if response.status_code in [200, 201]:
+                all_nodes = response.json()
+                
+                # Filter to only root level nodes (parent_id is None/null)
+                root_nodes = [node for node in all_nodes if node.get('parent_id') is None]
+                
+                # Sort by node type first, then by title
+                root_nodes.sort(key=lambda x: (x.get('node_type', ''), x.get('title', '')))
+                
+                return {
+                    "success": True,
+                    "message": f"Found {len(root_nodes)} root-level node(s)",
+                    "root_nodes": [
+                        {
+                            "id": node.get("id"),
+                            "title": node.get("title"),
+                            "node_type": node.get("node_type"),
+                            "created_at": node.get("created_at"),
+                            "updated_at": node.get("updated_at"),
+                            "tags": [tag.get("name", "") for tag in node.get("tags", [])]
+                        }
+                        for node in root_nodes
+                    ],
+                    "total_count": len(root_nodes),
+                    "breakdown": {
+                        "folders": len([n for n in root_nodes if n.get('node_type') == 'folder']),
+                        "smart_folders": len([n for n in root_nodes if n.get('node_type') == 'smart_folder']),
+                        "templates": len([n for n in root_nodes if n.get('node_type') == 'template']),
+                        "tasks": len([n for n in root_nodes if n.get('node_type') == 'task']),
+                        "notes": len([n for n in root_nodes if n.get('node_type') == 'note'])
+                    }
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Failed to get root nodes: HTTP {response.status_code}",
+                    "details": response.text
+                }
+                
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to get root nodes: {str(e)}"
+        }
+
 async def get_node_children(node_id: str, node_type: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Get immediate children of a specific node (optionally filtered by node type)"""
     try:
@@ -2291,36 +2376,58 @@ async def get_smart_folder_contents(smart_folder_id: str, limit: int = 100, offs
             
             if response.status_code == 200:
                 contents = response.json()
+                print(f"🔍 API Response: {contents}")
+                
+                # Check if contents is None or not a list
+                if contents is None:
+                    print("❌ API returned None")
+                    return {"success": False, "error": "API returned None response"}
+                
+                if not isinstance(contents, list):
+                    print(f"❌ API returned non-list: {type(contents)}")
+                    return {"success": False, "error": f"API returned unexpected type: {type(contents)}"}
                 
                 # Extract relevant information from each matching node
                 processed_contents = []
                 for node in contents:
-                    node_info = {
-                        'id': node['id'],
-                        'title': node['title'],
-                        'node_type': node['node_type'],
-                        'created_at': node['created_at'],
-                        'updated_at': node['updated_at'],
-                        'parent_id': node.get('parent_id'),
-                        'tags': [tag['name'] for tag in node.get('tags', [])]
-                    }
+                    try:
+                        node_info = {
+                            'id': node.get('id'),
+                            'title': node.get('title'),
+                            'node_type': node.get('node_type'),
+                            'created_at': node.get('created_at'),
+                            'updated_at': node.get('updated_at'),
+                            'parent_id': node.get('parent_id'),
+                            'tags': [tag.get('name', '') for tag in (node.get('tags') or [])]
+                        }
+                        
+                        # Add type-specific data
+                        if node.get('node_type') == 'task':
+                            task_data = node.get('task_data') or {}
+                            description = task_data.get('description') or '' if task_data else ''
+                            # Ensure description is string before slicing
+                            if not isinstance(description, str):
+                                description = str(description) if description else ''
+                            node_info.update({
+                                'status': task_data.get('status') if task_data else None,
+                                'priority': task_data.get('priority') if task_data else None,
+                                'due_at': task_data.get('due_at') if task_data else None,
+                                'description': description[:100] + ('...' if len(description) > 100 else '')
+                            })
+                        elif node.get('node_type') == 'note':
+                            note_data = node.get('note_data') or {}
+                            body = note_data.get('body') or '' if note_data else ''
+                            # Ensure body is string before slicing
+                            if not isinstance(body, str):
+                                body = str(body) if body else ''
+                            node_info.update({
+                                'content_preview': body[:100] + ('...' if len(body) > 100 else '')
+                            })
                     
-                    # Add type-specific data
-                    if node['node_type'] == 'task':
-                        task_data = node.get('task_data', {})
-                        node_info.update({
-                            'status': task_data.get('status'),
-                            'priority': task_data.get('priority'),
-                            'due_at': task_data.get('due_at'),
-                            'description': task_data.get('description', '')[:100] + ('...' if len(task_data.get('description', '')) > 100 else '')
-                        })
-                    elif node['node_type'] == 'note':
-                        note_data = node.get('note_data', {})
-                        node_info.update({
-                            'content_preview': note_data.get('body', '')[:100] + ('...' if len(note_data.get('body', '')) > 100 else '')
-                        })
-                
-                    processed_contents.append(node_info)
+                        processed_contents.append(node_info)
+                    except Exception as e:
+                        print(f"❌ Error processing node {node.get('id', 'unknown')}: {str(e)}")
+                        continue  # Skip this node and continue with others
                 
                 return {
                     "success": True,
@@ -2365,6 +2472,10 @@ async def instantiate_template(template_id: str, name: str, parent_id: str = "",
         print(f"   Instance name: {name}")
         print(f"   Parent ID: {parent_id}")
         print(f"   Auth token present: {bool(auth_token)}")
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         if not auth_token:
             return {"success": False, "error": "No authentication token provided"}
@@ -2449,6 +2560,10 @@ async def list_templates(category: str = "", limit: int = 50, offset: int = 0, a
         print(f"   Limit: {limit}")
         print(f"   Offset: {offset}")
         print(f"   Auth token present: {bool(auth_token)}")
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         if not auth_token:
             return {"success": False, "error": "No authentication token provided"}
@@ -2542,6 +2657,10 @@ async def search_templates(query: str, category: str = "", limit: int = 50, auth
         print(f"   Category filter: {category}")
         print(f"   Limit: {limit}")
         print(f"   Auth token present: {bool(auth_token)}")
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
         
         if not auth_token:
             return {"success": False, "error": "No authentication token provided"}
@@ -2637,6 +2756,7 @@ TOOL_HANDLERS = {
     "add_note_to_node_id": add_note_to_node_id,
     "get_all_folders": get_all_folders,
     "get_root_folders": get_root_folders,
+    "get_root_nodes": get_root_nodes,
     "get_node_children": get_node_children,
     "get_folder_id": get_folder_id,
     "add_task_to_node_id": add_task_to_node_id,
@@ -2737,6 +2857,15 @@ async def handle_list_tools():
         Tool(
             name="get_root_folders",
             description="Get only root-level folders (folders with no parent) - useful for showing top-level organization",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_root_nodes",
+            description="Get all root-level nodes (all types with no parent) - tasks, notes, folders, smart folders, templates - complete root overview",
             inputSchema={
                 "type": "object",
                 "properties": {},
