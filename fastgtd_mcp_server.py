@@ -2747,6 +2747,289 @@ async def search_templates(query: str, category: str = "", limit: int = 50, auth
             "error": f"Failed to search templates: {str(e)}"
         }
 
+async def upload_artifact(node_id: str, file_path: str, filename: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
+    """Upload a file and attach it to a node."""
+    try:
+        logger.info(f"📤 upload_artifact CALLED - node_id={node_id}, file_path={file_path}, filename={filename}")
+        
+        print("📤 MCP TOOL: upload_artifact")
+        print(f"   Node ID: {node_id}")
+        print(f"   File path: {file_path}")
+        print(f"   Custom filename: {filename}")
+        print(f"   Auth token present: {bool(auth_token)}")
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
+        if not auth_token:
+            return {"success": False, "error": "No authentication token available"}
+        
+        if not node_id:
+            return {"success": False, "error": "node_id is required"}
+        
+        if not file_path:
+            return {"success": False, "error": "file_path is required"}
+        
+        # Check if file exists
+        import os
+        from pathlib import Path
+        file_pathobj = Path(file_path)
+        if not file_pathobj.exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
+        
+        # Use custom filename or default to file basename
+        upload_filename = filename if filename else file_pathobj.name
+        
+        # FastGTD API endpoint for uploading artifacts
+        url = f"{FASTGTD_API_URL}/artifacts"
+        
+        # Prepare headers
+        headers = {
+            "Authorization": f"Bearer {auth_token}"
+        }
+        
+        # Prepare multipart form data
+        import httpx
+        with open(file_path, "rb") as f:
+            files = {"file": (upload_filename, f, None)}
+            data = {"node_id": node_id}
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    url,
+                    headers=headers,
+                    files=files,
+                    data=data
+                )
+        
+        if response.status_code == 201:
+            artifact_data = response.json()
+            logger.info(f"✅ Successfully uploaded artifact {artifact_data['id']} to node {node_id}")
+            return {
+                "success": True,
+                "message": f"Successfully uploaded '{upload_filename}' to node {node_id}",
+                "artifact": artifact_data
+            }
+        else:
+            error_msg = f"Upload failed: HTTP {response.status_code}"
+            if response.status_code == 401:
+                error_msg = "Authentication failed - invalid token"
+            elif response.status_code == 404:
+                error_msg = f"Node {node_id} not found or access denied"
+            elif response.status_code == 400:
+                try:
+                    error_detail = response.json()
+                    error_msg = f"Bad request: {error_detail.get('detail', 'Invalid upload parameters')}"
+                except:
+                    error_msg = "Bad request - invalid upload parameters"
+            
+            logger.error(f"❌ Upload failed: {error_msg}")
+            return {"success": False, "error": error_msg}
+            
+    except Exception as e:
+        logger.error(f"❌ upload_artifact error: {str(e)}")
+        print(f"❌ MCP ERROR in upload_artifact: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Failed to upload artifact: {str(e)}"
+        }
+
+async def download_artifact(artifact_id: str, download_path: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
+    """Download an artifact file by ID."""
+    try:
+        logger.info(f"📥 download_artifact CALLED - artifact_id={artifact_id}, download_path={download_path}")
+        
+        print("📥 MCP TOOL: download_artifact")
+        print(f"   Artifact ID: {artifact_id}")
+        print(f"   Download path: {download_path}")
+        print(f"   Auth token present: {bool(auth_token)}")
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
+        if not auth_token:
+            return {"success": False, "error": "No authentication token available"}
+        
+        if not artifact_id:
+            return {"success": False, "error": "artifact_id is required"}
+        
+        # FastGTD API endpoint for downloading artifacts
+        url = f"{FASTGTD_API_URL}/artifacts/{artifact_id}/download"
+        
+        # Prepare headers
+        headers = {
+            "Authorization": f"Bearer {auth_token}"
+        }
+        
+        import httpx
+        import os
+        from pathlib import Path
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            # Get filename from Content-Disposition header or use artifact_id as fallback
+            filename = artifact_id
+            if 'content-disposition' in response.headers:
+                import re
+                disposition = response.headers['content-disposition']
+                filename_match = re.search(r'filename="?([^"]+)"?', disposition)
+                if filename_match:
+                    filename = filename_match.group(1)
+            
+            # Determine save path
+            if download_path:
+                save_path = Path(download_path)
+                if save_path.is_dir():
+                    save_path = save_path / filename
+            else:
+                save_path = Path(filename)
+            
+            # Write file content
+            with open(save_path, "wb") as f:
+                f.write(response.content)
+            
+            logger.info(f"✅ Successfully downloaded artifact {artifact_id} to {save_path}")
+            return {
+                "success": True,
+                "message": f"Successfully downloaded artifact to '{save_path}'",
+                "file_path": str(save_path),
+                "size_bytes": len(response.content)
+            }
+        else:
+            error_msg = f"Download failed: HTTP {response.status_code}"
+            if response.status_code == 401:
+                error_msg = "Authentication failed - invalid token"
+            elif response.status_code == 404:
+                error_msg = f"Artifact {artifact_id} not found or access denied"
+            
+            logger.error(f"❌ Download failed: {error_msg}")
+            return {"success": False, "error": error_msg}
+            
+    except Exception as e:
+        logger.error(f"❌ download_artifact error: {str(e)}")
+        print(f"❌ MCP ERROR in download_artifact: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Failed to download artifact: {str(e)}"
+        }
+
+async def delete_artifact(artifact_id: str, auth_token: str = "", current_node_id: str = "") -> dict:
+    """Delete an artifact and its associated file."""
+    try:
+        logger.info(f"🗑️ delete_artifact CALLED - artifact_id={artifact_id}")
+        
+        print("🗑️ MCP TOOL: delete_artifact")
+        print(f"   Artifact ID: {artifact_id}")
+        print(f"   Auth token present: {bool(auth_token)}")
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
+        if not auth_token:
+            return {"success": False, "error": "No authentication token available"}
+        
+        if not artifact_id:
+            return {"success": False, "error": "artifact_id is required"}
+        
+        # FastGTD API endpoint for deleting artifacts
+        url = f"{FASTGTD_API_URL}/artifacts/{artifact_id}"
+        
+        # Prepare headers
+        headers = {
+            "Authorization": f"Bearer {auth_token}"
+        }
+        
+        import httpx
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(url, headers=headers)
+        
+        if response.status_code == 204:
+            logger.info(f"✅ Successfully deleted artifact {artifact_id}")
+            return {
+                "success": True,
+                "message": f"Successfully deleted artifact {artifact_id}"
+            }
+        else:
+            error_msg = f"Delete failed: HTTP {response.status_code}"
+            if response.status_code == 401:
+                error_msg = "Authentication failed - invalid token"
+            elif response.status_code == 404:
+                error_msg = f"Artifact {artifact_id} not found or access denied"
+            
+            logger.error(f"❌ Delete failed: {error_msg}")
+            return {"success": False, "error": error_msg}
+            
+    except Exception as e:
+        logger.error(f"❌ delete_artifact error: {str(e)}")
+        print(f"❌ MCP ERROR in delete_artifact: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Failed to delete artifact: {str(e)}"
+        }
+
+async def list_node_artifacts(node_id: str, auth_token: str = "", current_node_id: str = "") -> dict:
+    """List all artifacts attached to a specific node."""
+    try:
+        logger.info(f"📋 list_node_artifacts CALLED - node_id={node_id}")
+        
+        print("📋 MCP TOOL: list_node_artifacts")
+        print(f"   Node ID: {node_id}")
+        print(f"   Auth token present: {bool(auth_token)}")
+        
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+        
+        if not auth_token:
+            return {"success": False, "error": "No authentication token available"}
+        
+        if not node_id:
+            return {"success": False, "error": "node_id is required"}
+        
+        # FastGTD API endpoint for listing node artifacts
+        url = f"{FASTGTD_API_URL}/artifacts/node/{node_id}"
+        
+        # Prepare headers
+        headers = {
+            "Authorization": f"Bearer {auth_token}"
+        }
+        
+        import httpx
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            artifacts_data = response.json()
+            logger.info(f"✅ Found {artifacts_data.get('total', 0)} artifacts for node {node_id}")
+            return {
+                "success": True,
+                "message": f"Found {artifacts_data.get('total', 0)} artifact(s) for node {node_id}",
+                "artifacts": artifacts_data.get('artifacts', []),
+                "total": artifacts_data.get('total', 0)
+            }
+        else:
+            error_msg = f"List failed: HTTP {response.status_code}"
+            if response.status_code == 401:
+                error_msg = "Authentication failed - invalid token"
+            elif response.status_code == 404:
+                error_msg = f"Node {node_id} not found or access denied"
+            
+            logger.error(f"❌ List failed: {error_msg}")
+            return {"success": False, "error": error_msg}
+            
+    except Exception as e:
+        logger.error(f"❌ list_node_artifacts error: {str(e)}")
+        print(f"❌ MCP ERROR in list_node_artifacts: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Failed to list node artifacts: {str(e)}"
+        }
+
 # Tool handlers mapping
 TOOL_HANDLERS = {
     "add_task_to_inbox": add_task_to_inbox,
@@ -2777,6 +3060,10 @@ TOOL_HANDLERS = {
     "instantiate_template": instantiate_template,
     "list_templates": list_templates,
     "search_templates": search_templates,
+    "upload_artifact": upload_artifact,
+    "download_artifact": download_artifact,
+    "delete_artifact": delete_artifact,
+    "list_node_artifacts": list_node_artifacts,
 }
 
 @server.list_tools()
@@ -3122,6 +3409,53 @@ async def handle_list_tools():
                     "limit": {"type": "integer", "description": "Maximum number of templates to return (default: 50, max: 100)"}
                 },
                 "required": ["query"]
+            }
+        ),
+        Tool(
+            name="upload_artifact",
+            description="Upload a file and attach it to a node",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string", "description": "UUID of the node to attach the file to (required)"},
+                    "file_path": {"type": "string", "description": "Path to the file to upload (required)"},
+                    "filename": {"type": "string", "description": "Optional filename to use for the upload (defaults to basename of file_path)"}
+                },
+                "required": ["node_id", "file_path"]
+            }
+        ),
+        Tool(
+            name="download_artifact",
+            description="Download an artifact file by ID",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string", "description": "UUID of the artifact to download (required)"},
+                    "download_path": {"type": "string", "description": "Local path where to save the downloaded file (optional, defaults to original filename)"}
+                },
+                "required": ["artifact_id"]
+            }
+        ),
+        Tool(
+            name="delete_artifact",
+            description="Delete an artifact and its associated file",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string", "description": "UUID of the artifact to delete (required)"}
+                },
+                "required": ["artifact_id"]
+            }
+        ),
+        Tool(
+            name="list_node_artifacts",
+            description="List all artifacts attached to a specific node",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string", "description": "UUID of the node to get artifacts for (required)"}
+                },
+                "required": ["node_id"]
             }
         )
     ]
