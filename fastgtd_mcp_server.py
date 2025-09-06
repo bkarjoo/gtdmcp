@@ -2880,25 +2880,55 @@ async def download_artifact(artifact_id: str, download_path: str = "", auth_toke
                 if filename_match:
                     filename = filename_match.group(1)
             
-            # Determine save path
+            # Determine save path with better defaults for LLM environments
             if download_path:
                 save_path = Path(download_path)
                 if save_path.is_dir():
                     save_path = save_path / filename
             else:
-                save_path = Path(filename)
+                # Default to /tmp/ directory which is usually writable
+                save_path = Path("/tmp") / filename
             
-            # Write file content
-            with open(save_path, "wb") as f:
-                f.write(response.content)
-            
-            logger.info(f"✅ Successfully downloaded artifact {artifact_id} to {save_path}")
-            return {
-                "success": True,
-                "message": f"Successfully downloaded artifact to '{save_path}'",
-                "file_path": str(save_path),
-                "size_bytes": len(response.content)
-            }
+            # Try to write file content with fallback handling
+            try:
+                with open(save_path, "wb") as f:
+                    f.write(response.content)
+                
+                logger.info(f"✅ Successfully downloaded artifact {artifact_id} to {save_path}")
+                return {
+                    "success": True,
+                    "message": f"Successfully downloaded artifact to '{save_path}'",
+                    "file_path": str(save_path),
+                    "size_bytes": len(response.content)
+                }
+            except (OSError, PermissionError) as e:
+                # If writing fails (read-only filesystem), return content instead
+                logger.warning(f"⚠️ Could not write file {save_path}: {e}, returning content instead")
+                try:
+                    # Try to decode as text for better display
+                    content_text = response.content.decode('utf-8')
+                    logger.info(f"✅ Downloaded artifact {artifact_id} content as text (filesystem readonly)")
+                    return {
+                        "success": True,
+                        "message": f"Downloaded artifact content (could not write to file: {e})",
+                        "file_path": "content_returned_due_to_readonly_filesystem",
+                        "size_bytes": len(response.content),
+                        "content": content_text,
+                        "warning": f"File system write failed: {e}"
+                    }
+                except UnicodeDecodeError:
+                    # Binary content - return as base64
+                    import base64
+                    content_b64 = base64.b64encode(response.content).decode('ascii')
+                    logger.info(f"✅ Downloaded artifact {artifact_id} content as base64 (filesystem readonly)")
+                    return {
+                        "success": True,
+                        "message": f"Downloaded binary artifact content (could not write to file: {e})",
+                        "file_path": "binary_content_returned_due_to_readonly_filesystem", 
+                        "size_bytes": len(response.content),
+                        "content_base64": content_b64,
+                        "warning": f"File system write failed: {e}"
+                    }
         else:
             error_msg = f"Download failed: HTTP {response.status_code}"
             if response.status_code == 401:
