@@ -2837,13 +2837,12 @@ async def upload_artifact(node_id: str, file_path: str, filename: str = "", auth
 
 async def download_artifact(artifact_id: str, download_path: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Download an artifact file by ID."""
+    logger.info(f"📥 download_artifact CALLED - artifact_id={artifact_id}, download_path={download_path}, auth_token_present={bool(auth_token)}")
+    
     try:
-        logger.info(f"📥 download_artifact CALLED - artifact_id={artifact_id}, download_path={download_path}")
-        
-        print("📥 MCP TOOL: download_artifact")
-        print(f"   Artifact ID: {artifact_id}")
-        print(f"   Download path: {download_path}")
-        print(f"   Auth token present: {bool(auth_token)}")
+        import httpx
+        import os
+        from pathlib import Path
         
         # Get auth token if not provided
         if not auth_token:
@@ -2852,21 +2851,30 @@ async def download_artifact(artifact_id: str, download_path: str = "", auth_toke
         if not auth_token:
             return {"success": False, "error": "No authentication token available"}
         
-        if not artifact_id:
-            return {"success": False, "error": "artifact_id is required"}
+        print("📥 MCP TOOL: download_artifact")
+        print(f"   Artifact ID: {artifact_id}")
+        print(f"   Download path: {download_path}")
+        print(f"   Auth token present: {bool(auth_token)}")
         
         # FastGTD API endpoint for downloading artifacts
         url = f"{FASTGTD_API_URL}/artifacts/{artifact_id}/download"
         
-        # Prepare headers
-        headers = {
-            "Authorization": f"Bearer {auth_token}"
+    except Exception as e:
+        print(f"❌ MCP ERROR in setup: {str(e)}")
+        return {
+            "success": False,
+            "error": f"MCP tool setup failed: {str(e)}"
         }
-        
-        import httpx
-        import os
-        from pathlib import Path
-        
+    
+    if not artifact_id:
+        return {"success": False, "error": "artifact_id is required"}
+    
+    # Prepare headers
+    headers = {"Content-Type": "application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    
+    try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url, headers=headers)
         
