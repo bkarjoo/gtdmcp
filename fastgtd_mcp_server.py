@@ -27,6 +27,9 @@ FASTGTD_TOKEN = os.getenv('FASTGTD_TOKEN')
 FASTGTD_USERNAME = os.getenv('FASTGTD_USERNAME') 
 FASTGTD_PASSWORD = os.getenv('FASTGTD_PASSWORD')
 
+# File download configuration
+DEFAULT_DOWNLOAD_PATH = os.getenv('DEFAULT_DOWNLOAD_PATH', '/tmp')
+
 from mcp.server.models import InitializationOptions
 from mcp.server import NotificationOptions
 from mcp.server.stdio import stdio_server
@@ -2894,8 +2897,8 @@ async def download_artifact(artifact_id: str, download_path: str = "", auth_toke
                 if save_path.is_dir():
                     save_path = save_path / filename
             else:
-                # Default to /tmp/ directory which is usually writable
-                save_path = Path("/tmp") / filename
+                # Use configurable default download path
+                save_path = Path(DEFAULT_DOWNLOAD_PATH) / filename
             
             # Try to write file content with fallback handling
             try:
