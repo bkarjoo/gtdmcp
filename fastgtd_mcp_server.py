@@ -232,13 +232,14 @@ async def add_task_to_inbox(title: str, description: str = "", priority: str = "
             "error": f"Failed to add task to inbox: {str(e)}"
         }
 
-async def add_folder_to_current_node(title: str, auth_token: str = "", current_node_id: str = "") -> dict:
+async def add_folder_to_current_node(title: str, description: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Add a folder to the current node"""
     try:
         import httpx
         
         print(f"📁 MCP DEBUG - add_folder_to_current_node called:")
         print(f"   Title: {title}")
+        print(f"   Description: {description}")
         print(f"   Current node ID: {current_node_id}")
         print(f"   Auth token present: {bool(auth_token)}")
         
@@ -254,6 +255,10 @@ async def add_folder_to_current_node(title: str, auth_token: str = "", current_n
             "title": title,
             "parent_id": current_node_id
         }
+
+        # Add description if provided
+        if description:
+            folder_payload["folder_data"] = {"description": description}
         
         headers = {
             "Content-Type": "application/json",
@@ -1596,7 +1601,7 @@ async def delete_task(task_id: str, auth_token: str = "", current_node_id: str =
             "error": error_msg
         }
 
-async def create_folder(title: str, parent_id: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
+async def create_folder(title: str, description: str = "", parent_id: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Create a new folder - auto-detects best location (current folder or root)"""
     logger.info(f"📁 create_folder CALLED - title='{title}', parent_id='{parent_id}', auth_token_present={bool(auth_token)}")
     
@@ -1609,6 +1614,7 @@ async def create_folder(title: str, parent_id: str = "", auth_token: str = "", c
         
         print(f"📁 MCP DEBUG - create_folder called:")
         print(f"   Title: {title}")
+        print(f"   Description: {description}")
         print(f"   Parent ID: {parent_id}")
         print(f"   Current node ID: {current_node_id}")
         print(f"   Auth token present: {bool(auth_token)}")
@@ -1631,6 +1637,10 @@ async def create_folder(title: str, parent_id: str = "", auth_token: str = "", c
         "node_type": "folder",
         "title": title
     }
+
+    # Add description if provided
+    if description:
+        folder_payload["folder_data"] = {"description": description}
     
     # Determine parent location
     if parent_id:
@@ -3143,7 +3153,8 @@ async def handle_list_tools():
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Folder name (required)"}
+                    "title": {"type": "string", "description": "Folder name (required)"},
+                    "description": {"type": "string", "description": "Optional description for the folder"}
                 },
                 "required": ["title"]
             }
@@ -3325,6 +3336,7 @@ async def handle_list_tools():
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Folder title/name (required)"},
+                    "description": {"type": "string", "description": "Optional description for the folder"},
                     "parent_id": {"type": "string", "description": "Specific parent folder ID (optional - auto-detects if not provided)"}
                 },
                 "required": ["title"]
