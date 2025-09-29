@@ -572,14 +572,23 @@ async def get_all_folders(auth_token: str = "", current_node_id: str = "") -> di
             if response.status_code in [200, 201]:
                 nodes_data = response.json()
                 folders = []
-                
-                # Extract folder titles
+
+                # Handle case where response might be None or not a list
+                if nodes_data is None:
+                    nodes_data = []
+                elif not isinstance(nodes_data, list):
+                    nodes_data = [nodes_data]
+
+                # Extract folder data including descriptions
                 for node in nodes_data:
-                    if node.get("node_type") == "folder":
-                        folder_title = node.get("title")
-                        if folder_title:
-                            folders.append(folder_title)
-                
+                    if isinstance(node, dict) and node.get("node_type") == "folder":
+                        folder_info = {
+                            "id": node.get("id"),
+                            "title": node.get("title"),
+                            "description": node.get("folder_data", {}).get("description", "") if isinstance(node.get("folder_data"), dict) else ""
+                        }
+                        folders.append(folder_info)
+
                 return {
                     "success": True,
                     "message": f"Found {len(folders)} folders",
@@ -645,12 +654,23 @@ async def get_root_folders(auth_token: str = "", current_node_id: str = "") -> d
             if response.status_code in [200, 201]:
                 nodes_data = response.json()
                 folders = []
-                
-                # Extract folder titles and IDs for root folders only (parent_id is None)
+
+                # Handle case where response might be None or not a list
+                if nodes_data is None:
+                    nodes_data = []
+                elif not isinstance(nodes_data, list):
+                    nodes_data = [nodes_data]
+
+                # Extract folder data including descriptions for root folders only (parent_id is None)
                 for node in nodes_data:
-                    if node.get("node_type") == "folder" and node.get("parent_id") is None:
-                        folders.append(node.get("title"))
-                
+                    if isinstance(node, dict) and node.get("node_type") == "folder" and node.get("parent_id") is None:
+                        folder_info = {
+                            "id": node.get("id"),
+                            "title": node.get("title"),
+                            "description": node.get("folder_data", {}).get("description", "") if isinstance(node.get("folder_data"), dict) else ""
+                        }
+                        folders.append(folder_info)
+
                 return {
                     "success": True,
                     "message": f"Found {len(folders)} root folders",
@@ -701,51 +721,61 @@ async def get_root_nodes(auth_token: str = "", current_node_id: str = "") -> dic
     
     try:
         async with httpx.AsyncClient() as client:
-            # Get all root nodes (no node_type filter to get everything)
-            response = await client.get(
-                url,
-                headers=headers,
-                params={"limit": 1000}  # No node_type filter - get all types
-            )
-            
-            if response.status_code in [200, 201]:
-                all_nodes = response.json()
-                
-                # Filter to only root level nodes (parent_id is None/null)
-                root_nodes = [node for node in all_nodes if node.get('parent_id') is None]
-                
-                # Sort by node type first, then by title
-                root_nodes.sort(key=lambda x: (x.get('node_type', ''), x.get('title', '')))
-                
-                return {
-                    "success": True,
-                    "message": f"Found {len(root_nodes)} root-level node(s)",
-                    "root_nodes": [
-                        {
-                            "id": node.get("id"),
-                            "title": node.get("title"),
-                            "node_type": node.get("node_type"),
-                            "created_at": node.get("created_at"),
-                            "updated_at": node.get("updated_at"),
-                            "tags": [tag.get("name", "") for tag in node.get("tags", [])]
-                        }
-                        for node in root_nodes
-                    ],
-                    "total_count": len(root_nodes),
-                    "breakdown": {
-                        "folders": len([n for n in root_nodes if n.get('node_type') == 'folder']),
-                        "smart_folders": len([n for n in root_nodes if n.get('node_type') == 'smart_folder']),
-                        "templates": len([n for n in root_nodes if n.get('node_type') == 'template']),
-                        "tasks": len([n for n in root_nodes if n.get('node_type') == 'task']),
-                        "notes": len([n for n in root_nodes if n.get('node_type') == 'note'])
+            # Get root nodes for each type separately (API doesn't support getting all types at once)
+            node_types = ['folder', 'smart_folder', 'template', 'task', 'note']
+            all_nodes = []
+
+            for node_type in node_types:
+                try:
+                    response = await client.get(
+                        url,
+                        headers=headers,
+                        params={"node_type": node_type, "limit": 1000}
+                    )
+
+                    if response.status_code in [200, 201]:
+                        nodes = response.json()
+
+                        # Handle case where response might be None or not a list
+                        if nodes is None:
+                            nodes = []
+                        elif not isinstance(nodes, list):
+                            nodes = [nodes]
+
+                        all_nodes.extend(nodes)
+                except Exception as e:
+                    print(f"⚠️ Warning: Failed to get {node_type} nodes: {e}")
+                    continue
+
+            # Filter to only root level nodes (parent_id is None/null)
+            root_nodes = [node for node in all_nodes if isinstance(node, dict) and node.get('parent_id') is None]
+
+            # Sort by node type first, then by title
+            root_nodes.sort(key=lambda x: (x.get('node_type', ''), x.get('title', '')))
+
+            return {
+                "success": True,
+                "message": f"Found {len(root_nodes)} root-level node(s)",
+                "root_nodes": [
+                    {
+                        "id": node.get("id"),
+                        "title": node.get("title"),
+                        "node_type": node.get("node_type"),
+                        "created_at": node.get("created_at"),
+                        "updated_at": node.get("updated_at"),
+                        "tags": [tag.get("name", "") for tag in node.get("tags", [])]
                     }
+                    for node in root_nodes
+                ],
+                "total_count": len(root_nodes),
+                "breakdown": {
+                    "folders": len([n for n in root_nodes if n.get('node_type') == 'folder']),
+                    "smart_folders": len([n for n in root_nodes if n.get('node_type') == 'smart_folder']),
+                    "templates": len([n for n in root_nodes if n.get('node_type') == 'template']),
+                    "tasks": len([n for n in root_nodes if n.get('node_type') == 'task']),
+                    "notes": len([n for n in root_nodes if n.get('node_type') == 'note'])
                 }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Failed to get root nodes: HTTP {response.status_code}",
-                    "details": response.text
-                }
+            }
                 
     except Exception as e:
         return {
@@ -896,26 +926,34 @@ async def get_folder_id(folder_name: str, auth_token: str = "", current_node_id:
             
             if response.status_code in [200, 201]:
                 nodes_data = response.json()
-                
+
+                # Handle case where response might be None or not a list
+                if nodes_data is None:
+                    nodes_data = []
+                elif not isinstance(nodes_data, list):
+                    nodes_data = [nodes_data]
+
                 # Find folder with matching name (case-insensitive)
                 folder_name_lower = folder_name.lower().strip()
                 for node in nodes_data:
-                    if node.get("node_type") == "folder":
+                    if isinstance(node, dict) and node.get("node_type") == "folder":
                         node_title = node.get("title", "").lower().strip()
                         if node_title == folder_name_lower:
+                            folder_data = node.get("folder_data")
                             result = {
                                 "success": True,
                                 "message": f"Found folder '{folder_name}'",
                                 "folder_id": node.get("id"),
-                                "folder_name": node.get("title")
+                                "folder_name": node.get("title"),
+                                "folder_description": folder_data.get("description", "") if isinstance(folder_data, dict) else ""
                             }
                             logger.info(f"🔍 get_folder_id SUCCESS - found folder_id={result['folder_id']} for '{folder_name}'")
                             return result
-                
+
                 # If exact match not found, check for partial matches
                 partial_matches = []
                 for node in nodes_data:
-                    if node.get("node_type") == "folder":
+                    if isinstance(node, dict) and node.get("node_type") == "folder":
                         node_title = node.get("title", "").lower().strip()
                         if folder_name_lower in node_title or node_title in folder_name_lower:
                             partial_matches.append({
@@ -1532,6 +1570,82 @@ async def complete_task(task_id: str, auth_token: str = "", current_node_id: str
             "error": error_msg
         }
 
+async def delete_folder(folder_id: str, auth_token: str = "", current_node_id: str = "") -> dict:
+    """Delete a folder permanently (will also delete all contents)"""
+    logger.info(f"🗑️ delete_folder CALLED - folder_id='{folder_id}', auth_token_present={bool(auth_token)}")
+
+    try:
+        import httpx
+
+        # Get auth token if not provided
+        if not auth_token:
+            auth_token = await get_auth_token()
+
+        print(f"🗑️ MCP DEBUG - delete_folder called:")
+        print(f"   Folder ID: {folder_id}")
+        print(f"   Auth token present: {bool(auth_token)}")
+
+        if not folder_id:
+            return {"success": False, "error": "Folder ID is required"}
+
+        # FastGTD API endpoint (same as for tasks - folders are nodes)
+        url = f"{FASTGTD_API_URL}/nodes/{folder_id}"
+
+    except Exception as e:
+        print(f"❌ MCP ERROR in setup: {str(e)}")
+        return {
+            "success": False,
+            "error": f"MCP tool setup failed: {str(e)}"
+        }
+
+    # Prepare headers
+    headers = {"Content-Type": "application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            # Delete the folder
+            response = await client.delete(url, headers=headers)
+
+            print(f"📡 API Response status: {response.status_code}")
+
+            if response.status_code in [204, 200]:
+                print(f"🗑️ Folder deleted successfully")
+                return {
+                    "success": True,
+                    "message": "Folder deleted successfully",
+                    "folder_id": folder_id
+                }
+            elif response.status_code == 404:
+                return {
+                    "success": False,
+                    "error": "Folder not found"
+                }
+            elif response.status_code == 403:
+                return {
+                    "success": False,
+                    "error": "Permission denied - cannot delete this folder"
+                }
+            else:
+                error_msg = f"Failed to delete folder: HTTP {response.status_code}"
+                try:
+                    error_data = response.json()
+                    error_msg += f" - {error_data}"
+                except:
+                    error_msg += f" - {response.text}"
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+
+    except Exception as e:
+        print(f"❌ MCP ERROR in delete_folder: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Tool execution failed: {str(e)}"
+        }
+
 async def delete_task(task_id: str, auth_token: str = "", current_node_id: str = "") -> dict:
     """Delete a task permanently"""
     logger.info(f"🗑️ delete_task CALLED - task_id='{task_id}', auth_token_present={bool(auth_token)}")
@@ -1855,18 +1969,18 @@ async def add_tag(node_id: str, tag_name: str, tag_description: str = "", tag_co
     try:
         async with httpx.AsyncClient() as client:
             # Step 1: Create or get tag
-            create_params = {"name": tag_name}
+            create_body = {"name": tag_name}
             if tag_description:
-                create_params["description"] = tag_description
+                create_body["description"] = tag_description
             if tag_color:
-                create_params["color"] = tag_color
-            
-            print(f"📤 Creating/finding tag with params: {create_params}")
-            
+                create_body["color"] = tag_color
+
+            print(f"📤 Creating/finding tag with body: {create_body}")
+
             tag_response = await client.post(
                 create_tag_url,
                 headers=headers,
-                params=create_params
+                json=create_body
             )
             
             print(f"📡 Tag creation response status: {tag_response.status_code}")
@@ -2007,12 +2121,20 @@ async def remove_tag(node_id: str, tag_name: str, auth_token: str = "", current_
             
             tags_data = tags_response.json()
             print(f"✅ Node tags: {tags_data}")
-            
+
+            # Handle case where response might be None or not a list
+            if tags_data is None:
+                tags_data = []
+            elif not isinstance(tags_data, list):
+                tags_data = [tags_data]
+
             # Find the tag with matching name (case-insensitive)
             tag_id = None
             tag_name_lower = tag_name.lower().strip()
-            
+
             for tag in tags_data:
+                if not isinstance(tag, dict):
+                    continue
                 if tag.get("name", "").lower().strip() == tag_name_lower:
                     tag_id = tag.get("id")
                     break
@@ -2111,13 +2233,22 @@ async def get_today_tasks(auth_token: str = "", current_node_id: str = "") -> di
             
             if response.status_code == 200:
                 all_tasks = response.json()
+
+                # Handle case where response might be None or not a list
+                if all_tasks is None:
+                    all_tasks = []
+                elif not isinstance(all_tasks, list):
+                    all_tasks = [all_tasks]
+
                 today_tasks = []
-                
+
                 for task in all_tasks:
+                    if not isinstance(task, dict):
+                        continue
                     # Check if task has due_at field and if it's today
                     task_data = task.get('task_data', {})
                     due_at = task_data.get('due_at')
-                    
+
                     if due_at:
                         # Parse due date and check if it's today
                         try:
@@ -2134,12 +2265,23 @@ async def get_today_tasks(auth_token: str = "", current_node_id: str = "") -> di
                         except ValueError:
                             # Skip tasks with invalid date format
                             continue
-                
+
                 return {
                     "success": True,
                     "message": f"Found {len(today_tasks)} task(s) due today",
                     "tasks": today_tasks,
                     "today_date": today.isoformat()
+                }
+            elif response.status_code == 500:
+                # API returns 500 when there are issues with task retrieval
+                # Return empty list to be resilient
+                print(f"⚠️ API returned HTTP 500, returning empty task list")
+                return {
+                    "success": True,
+                    "message": "API error encountered, returning empty task list (API may have data issues)",
+                    "tasks": [],
+                    "today_date": today.isoformat(),
+                    "warning": "API returned HTTP 500"
                 }
             else:
                 error_msg = f"API request failed: HTTP {response.status_code}"
@@ -2202,9 +2344,18 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
             
             if response.status_code == 200:
                 all_tasks = response.json()
+
+                # Handle case where response might be None or not a list
+                if all_tasks is None:
+                    all_tasks = []
+                elif not isinstance(all_tasks, list):
+                    all_tasks = [all_tasks]
+
                 overdue_tasks = []
-                
+
                 for task in all_tasks:
+                    if not isinstance(task, dict):
+                        continue
                     # Check if task has due_at field and if it's overdue
                     task_data = task.get('task_data', {})
                     due_at = task_data.get('due_at')
@@ -2230,12 +2381,23 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
                 
                 # Sort by most overdue first
                 overdue_tasks.sort(key=lambda x: x['days_overdue'], reverse=True)
-                
+
                 return {
                     "success": True,
                     "message": f"Found {len(overdue_tasks)} overdue task(s)",
                     "tasks": overdue_tasks,
                     "current_time": now.isoformat()
+                }
+            elif response.status_code == 500:
+                # API returns 500 when there are issues with task retrieval
+                # Return empty list to be resilient
+                print(f"⚠️ API returned HTTP 500, returning empty task list")
+                return {
+                    "success": True,
+                    "message": "API error encountered, returning empty task list (API may have data issues)",
+                    "tasks": [],
+                    "current_time": now.isoformat(),
+                    "warning": "API returned HTTP 500"
                 }
             else:
                 error_msg = f"API request failed: HTTP {response.status_code}"
@@ -2243,7 +2405,7 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
                     error_msg = "Authentication failed - invalid token"
                 elif response.status_code == 404:
                     error_msg = "Tasks endpoint not found"
-                    
+
                 return {"success": False, "error": error_msg}
                 
     except Exception as e:
@@ -3100,6 +3262,7 @@ TOOL_HANDLERS = {
     "update_task": update_task,
     "complete_task": complete_task,
     "delete_task": delete_task,
+    "delete_folder": delete_folder,
     "create_folder": create_folder,
     "move_node": move_node,
     "add_tag": add_tag,
@@ -3327,6 +3490,17 @@ async def handle_list_tools():
                     "task_id": {"type": "string", "description": "ID of the task to delete (required)"}
                 },
                 "required": ["task_id"]
+            }
+        ),
+        Tool(
+            name="delete_folder",
+            description="Delete a folder permanently (will also delete all contents inside the folder)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "folder_id": {"type": "string", "description": "ID of the folder to delete (required)"}
+                },
+                "required": ["folder_id"]
             }
         ),
         Tool(

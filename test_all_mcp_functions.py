@@ -526,6 +526,212 @@ async def test_smart_folder_with_none_description():
     except Exception as e:
         await log_test_result("smart_folder_none_description_import", False, str(e))
 
+async def test_folder_description_features():
+    """Test folder description functionality added to MCP"""
+    print("\n=== Testing Folder Description Features ===")
+
+    sys.path.append('/home/bkarjoo/dev/gtdmcp')
+    try:
+        from fastgtd_mcp_server import (
+            create_folder, add_folder_to_current_node, get_all_folders,
+            get_root_folders, get_folder_id, delete_task
+        )
+
+        # Test: create_folder with description
+        try:
+            result = await create_folder(
+                title="Test Folder with Description",
+                description="This is a test folder description"
+            )
+            success = result.get("success", False)
+            test_folder_id = result.get("folder", {}).get("id") if success else None
+
+            # Verify by retrieving the folder with get_folder_id to check description was saved
+            if success and test_folder_id:
+                verify_result = await get_folder_id("Test Folder with Description")
+                has_description = bool(verify_result.get("folder_description"))
+                await log_test_result(
+                    "create_folder_with_description",
+                    success and has_description,
+                    f"Folder created but description not found: {verify_result}" if not has_description else ""
+                )
+            else:
+                await log_test_result(
+                    "create_folder_with_description",
+                    False,
+                    str(result)
+                )
+        except Exception as e:
+            await log_test_result("create_folder_with_description", False, str(e))
+
+        # Test: add_folder_to_current_node with description
+        try:
+            from fastgtd_mcp_server import get_auth_token
+
+            # Get auth token first
+            auth_token = await get_auth_token()
+
+            # First create a parent folder
+            parent_result = await create_folder(title="Parent for Description Test")
+            parent_id = parent_result.get("folder", {}).get("id") if parent_result.get("success") else None
+
+            if parent_id:
+                result = await add_folder_to_current_node(
+                    title="Child Folder with Description",
+                    description="This is a child folder description",
+                    auth_token=auth_token,
+                    current_node_id=parent_id
+                )
+                success = result.get("success", False)
+                child_folder_id = result.get("folder_id") if success else None
+
+                # Verify by checking the child folder's title
+                if success and child_folder_id:
+                    verify_result = await get_folder_id("Child Folder with Description")
+                    has_description = bool(verify_result.get("folder_description"))
+                    await log_test_result(
+                        "add_folder_with_description",
+                        success and has_description,
+                        f"Folder created but description not found: {verify_result}" if not has_description else ""
+                    )
+
+                    # Cleanup child folder
+                    await delete_task(child_folder_id)
+                else:
+                    await log_test_result(
+                        "add_folder_with_description",
+                        False,
+                        str(result)
+                    )
+            else:
+                await log_test_result("add_folder_with_description", False, "Could not create parent folder")
+
+            # Cleanup parent folder
+            if parent_id:
+                await delete_task(parent_id)
+        except Exception as e:
+            await log_test_result("add_folder_with_description", False, str(e))
+
+        # Test: get_all_folders returns descriptions
+        try:
+            result = await get_all_folders()
+            success = result.get("success", False)
+            folders = result.get("folders", [])
+
+            # Check that folders are returned as objects with id, title, description
+            has_correct_format = False
+            if success and folders:
+                # Check first folder has expected keys
+                first_folder = folders[0]
+                has_correct_format = (
+                    isinstance(first_folder, dict) and
+                    "id" in first_folder and
+                    "title" in first_folder and
+                    "description" in first_folder
+                )
+            elif success and not folders:
+                # Empty list is valid
+                has_correct_format = True
+
+            await log_test_result(
+                "get_all_folders_returns_descriptions",
+                success and has_correct_format,
+                str(result) if not (success and has_correct_format) else ""
+            )
+        except Exception as e:
+            await log_test_result("get_all_folders_returns_descriptions", False, str(e))
+
+        # Test: get_root_folders returns descriptions
+        try:
+            result = await get_root_folders()
+            success = result.get("success", False)
+            folders = result.get("folders", [])
+
+            # Check that folders are returned as objects with id, title, description
+            has_correct_format = False
+            if success and folders:
+                first_folder = folders[0]
+                has_correct_format = (
+                    isinstance(first_folder, dict) and
+                    "id" in first_folder and
+                    "title" in first_folder and
+                    "description" in first_folder
+                )
+            elif success and not folders:
+                has_correct_format = True
+
+            await log_test_result(
+                "get_root_folders_returns_descriptions",
+                success and has_correct_format,
+                str(result) if not (success and has_correct_format) else ""
+            )
+        except Exception as e:
+            await log_test_result("get_root_folders_returns_descriptions", False, str(e))
+
+        # Test: get_folder_id returns description
+        try:
+            if test_folder_id:
+                result = await get_folder_id("Test Folder with Description")
+                success = result.get("success", False)
+                has_description_field = "folder_description" in result
+                await log_test_result(
+                    "get_folder_id_returns_description",
+                    success and has_description_field,
+                    str(result) if not (success and has_description_field) else ""
+                )
+
+                # Cleanup test folder
+                await delete_task(test_folder_id)
+            else:
+                await log_test_result("get_folder_id_returns_description", False, "Test folder not created")
+        except Exception as e:
+            await log_test_result("get_folder_id_returns_description", False, str(e))
+
+        # Test: delete_folder function
+        try:
+            from fastgtd_mcp_server import delete_folder
+
+            # Create a test folder to delete
+            test_folder = await create_folder(
+                title="Test Folder to Delete",
+                description="This folder will be deleted"
+            )
+            if test_folder.get("success"):
+                folder_to_delete_id = test_folder.get("folder", {}).get("id")
+
+                # Add a child task to verify cascade deletion
+                if folder_to_delete_id:
+                    from fastgtd_mcp_server import add_task_to_node_id
+                    await add_task_to_node_id(
+                        node_id=folder_to_delete_id,
+                        task_title="Child task in folder to delete"
+                    )
+
+                    # Now delete the folder
+                    delete_result = await delete_folder(folder_to_delete_id)
+                    success = delete_result.get("success", False)
+
+                    # Verify folder is gone by trying to get it
+                    verify_deleted = False
+                    if success:
+                        check_result = await get_folder_id("Test Folder to Delete")
+                        verify_deleted = not check_result.get("success", False)
+
+                    await log_test_result(
+                        "delete_folder",
+                        success and verify_deleted,
+                        f"Delete result: {delete_result}, Verify: {check_result if success else 'Not checked'}" if not (success and verify_deleted) else ""
+                    )
+                else:
+                    await log_test_result("delete_folder", False, "Could not get folder ID")
+            else:
+                await log_test_result("delete_folder", False, "Could not create test folder")
+        except Exception as e:
+            await log_test_result("delete_folder", False, str(e))
+
+    except Exception as e:
+        await log_test_result("folder_description_features_import", False, str(e))
+
 async def cleanup_test_data():
     """Clean up all test data created during testing"""
     print("\n=== Cleaning Up Test Data ===")
@@ -624,6 +830,7 @@ async def main():
     await test_advanced_functions()
     await test_template_functions()
     await test_smart_folder_with_none_description()
+    await test_folder_description_features()
     
     # Print final results
     print(f"\n📊 Final Test Results: {passed_tests}/{total_tests} tests passed")
