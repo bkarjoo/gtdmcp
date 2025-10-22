@@ -30,6 +30,26 @@ FASTGTD_PASSWORD = os.getenv('FASTGTD_PASSWORD')
 # File download configuration
 DEFAULT_DOWNLOAD_PATH = os.getenv('DEFAULT_DOWNLOAD_PATH', '/tmp')
 
+# Pagination constants
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 100
+MAX_SEARCH_RESULTS = 100
+
+# Response limits
+CHARACTER_LIMIT = 25000  # Max characters in response (MCP best practice)
+MAX_TREE_DEPTH = 20
+DEFAULT_TREE_DEPTH = 10
+
+# HTTP configuration
+HTTP_TIMEOUT = 30.0  # seconds
+MAX_RETRIES = 3
+
+# Response format configuration
+DEFAULT_RESPONSE_FORMAT = "markdown"  # "json" or "markdown"
+ALLOWED_FORMATS = ["json", "markdown"]
+DEFAULT_DETAIL_LEVEL = "concise"  # "concise" or "detailed"
+ALLOWED_DETAIL_LEVELS = ["concise", "detailed"]
+
 from mcp.server.models import InitializationOptions
 from mcp.server import NotificationOptions
 from mcp.server.stdio import stdio_server
@@ -37,6 +57,255 @@ from mcp.types import (
     TextContent,
     Tool,
 )
+
+# Pydantic imports for input validation
+from pydantic import BaseModel, Field, field_validator, ConfigDict
+from typing import Literal, Optional
+from enum import Enum
+
+# Enum types for constrained values
+class Priority(str, Enum):
+    """Task priority levels"""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    URGENT = "urgent"
+
+class NodeType(str, Enum):
+    """Node types in FastGTD"""
+    TASK = "task"
+    NOTE = "note"
+    FOLDER = "folder"
+    SMART_FOLDER = "smart_folder"
+    TEMPLATE = "template"
+
+class TaskStatus(str, Enum):
+    """Task completion status"""
+    INCOMPLETE = "incomplete"
+    COMPLETE = "complete"
+
+# Pydantic models for input validation
+class CreateTaskInput(BaseModel):
+    """Input model for create_task"""
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(..., min_length=1, max_length=500, description="Task title")
+    description: str = Field("", max_length=5000, description="Task description")
+    priority: Optional[Priority] = Field(None, description="Task priority level (low, medium, high, urgent)")
+    due_at: Optional[str] = Field(None, description="Due date/time in ISO format (e.g., '2024-12-25T10:00:00Z')")
+    parent_id: Optional[str] = Field(None, description="Parent folder ID")
+    tags: Optional[list[str]] = Field(None, description="List of tags to add")
+    recurrence_rule: Optional[str] = Field(None, description="Recurrence rule in iCalendar format")
+
+class SearchNodesInput(BaseModel):
+    """Input model for search_nodes"""
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(..., min_length=1, description="Search query text")
+    limit: int = Field(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description=f"Max results (1-{MAX_PAGE_SIZE})")
+    node_types: Optional[list[NodeType]] = Field(None, description="Filter by node types")
+
+class PaginationInput(BaseModel):
+    """Standard pagination parameters"""
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description=f"Results per page (default: {DEFAULT_PAGE_SIZE}, max: {MAX_PAGE_SIZE})")
+    offset: int = Field(0, ge=0, description="Number of items to skip (default: 0)")
+
+class ResponseFormatInput(BaseModel):
+    """Response format configuration"""
+    model_config = ConfigDict(extra="forbid")
+
+    response_format: Literal["json", "markdown"] = Field(DEFAULT_RESPONSE_FORMAT, description="Response format (json or markdown)")
+    detail_level: Literal["concise", "detailed"] = Field(DEFAULT_DETAIL_LEVEL, description="Detail level (concise or detailed)")
+
+# Utility functions for response formatting
+def truncate_response(text: str, limit: int = CHARACTER_LIMIT) -> str:
+    """Truncate response if it exceeds character limit"""
+    if len(text) <= limit:
+        return text
+
+    truncated = text[:limit - 100]  # Leave room for truncation message
+    return f"{truncated}\n\n... [Response truncated. Original length: {len(text)} characters, showing first {limit - 100} characters]"
+
+def format_response_as_markdown(data: dict, detail_level: str = "concise") -> str:
+    """Format response data as human-readable Markdown"""
+    if not data.get("success", False):
+        # Error responses stay as JSON for clarity
+        return json.dumps(data, indent=2)
+
+    lines = []
+
+    # Handle different response types
+    if "nodes" in data or "results" in data:
+        # List of nodes/results
+        items = data.get("nodes") or data.get("results", [])
+        if detail_level == "concise":
+            lines.append(f"**Found {len(items)} items:**\n")
+            for item in items:
+                title = item.get("title") or item.get("name", "Untitled")
+                node_type = item.get("node_type", "item")
+                node_id = item.get("id", "")
+                lines.append(f"- [{node_type}] {title} (ID: {node_id})")
+        else:  # detailed
+            lines.append(f"**Found {len(items)} items:**\n")
+            for item in items:
+                title = item.get("title") or item.get("name", "Untitled")
+                node_type = item.get("node_type", "item")
+                node_id = item.get("id", "")
+                lines.append(f"### {title}")
+                lines.append(f"- **Type:** {node_type}")
+                lines.append(f"- **ID:** {node_id}")
+                if item.get("description"):
+                    lines.append(f"- **Description:** {item['description']}")
+                if item.get("priority"):
+                    lines.append(f"- **Priority:** {item['priority']}")
+                if item.get("due_at"):
+                    lines.append(f"- **Due:** {item['due_at']}")
+                lines.append("")
+
+    elif "tree" in data:
+        # Tree structure
+        tree = data["tree"]
+        lines.append(f"**Tree from '{tree.get('title', 'Root')}':**\n")
+        lines.append(_format_tree_node(tree, level=0, detail_level=detail_level))
+
+    elif "task" in data or "folder" in data or "note" in data:
+        # Single item
+        item = data.get("task") or data.get("folder") or data.get("note", {})
+        title = item.get("title") or item.get("name", "Untitled")
+        lines.append(f"## {title}")
+        lines.append(f"- **ID:** {item.get('id', 'N/A')}")
+        lines.append(f"- **Type:** {item.get('node_type', 'N/A')}")
+        if detail_level == "detailed":
+            if item.get("description"):
+                lines.append(f"- **Description:** {item['description']}")
+            if item.get("priority"):
+                lines.append(f"- **Priority:** {item['priority']}")
+            if item.get("due_at"):
+                lines.append(f"- **Due:** {item['due_at']}")
+
+    elif "message" in data:
+        # Simple success message
+        lines.append(f"**Success:** {data['message']}")
+        if detail_level == "detailed" and len(data) > 2:
+            lines.append(f"\n```json\n{json.dumps(data, indent=2)}\n```")
+
+    else:
+        # Fallback to JSON
+        return json.dumps(data, indent=2)
+
+    return "\n".join(lines)
+
+def _format_tree_node(node: dict, level: int = 0, detail_level: str = "concise") -> str:
+    """Recursively format a tree node"""
+    indent = "  " * level
+    title = node.get("title") or node.get("name", "Untitled")
+    node_type = node.get("node_type", "item")
+    node_id = node.get("id", "")
+
+    lines = []
+    if detail_level == "concise":
+        lines.append(f"{indent}- [{node_type}] {title}")
+    else:
+        lines.append(f"{indent}- [{node_type}] {title} (ID: {node_id})")
+        if node.get("description"):
+            lines.append(f"{indent}  Description: {node['description'][:100]}...")
+
+    # Recursively format children
+    if node.get("children"):
+        for child in node["children"]:
+            lines.append(_format_tree_node(child, level + 1, detail_level))
+
+    return "\n".join(lines)
+
+def format_response(
+    data: dict,
+    response_format: str = DEFAULT_RESPONSE_FORMAT,
+    detail_level: str = DEFAULT_DETAIL_LEVEL
+) -> str:
+    """Format response based on format and detail level preferences"""
+    if response_format == "markdown":
+        formatted = format_response_as_markdown(data, detail_level)
+    else:  # json
+        formatted = json.dumps(data, indent=2)
+
+    # Always truncate if needed
+    return truncate_response(formatted)
+
+# Error handling utilities
+def create_error_response(
+    error_message: str,
+    suggestion: str = "",
+    error_code: str = "",
+    details: dict = None
+) -> dict:
+    """
+    Create a standardized, actionable error response.
+
+    Args:
+        error_message: Clear description of what went wrong
+        suggestion: Actionable suggestion for how to fix it
+        error_code: Machine-readable error code (e.g., "AUTH_FAILED", "MISSING_PARAM")
+        details: Additional context/details
+
+    Returns:
+        Standardized error response dict
+    """
+    response = {
+        "success": False,
+        "error": error_message
+    }
+
+    if suggestion:
+        response["error"] = f"{error_message}. {suggestion}"
+
+    if error_code:
+        response["error_code"] = error_code
+
+    if details:
+        response["details"] = details
+
+    return response
+
+# Common error templates
+ERROR_TEMPLATES = {
+    "no_auth": {
+        "message": "No authentication token available",
+        "suggestion": "Ensure FASTGTD_TOKEN environment variable is set, or FASTGTD_USERNAME and FASTGTD_PASSWORD are configured",
+        "code": "AUTH_MISSING"
+    },
+    "node_id_required": {
+        "message": "Node ID is required",
+        "suggestion": "Use get_folder_id(folder_name='YourFolder') to find a folder ID, or get_root_nodes() to list available nodes",
+        "code": "MISSING_NODE_ID"
+    },
+    "search_query_required": {
+        "message": "Search query is required and must be at least 1 character",
+        "suggestion": "Provide a search term, e.g., search_nodes(query='meeting') to find items containing 'meeting'",
+        "code": "INVALID_QUERY"
+    },
+    "invalid_node_type": {
+        "message": "Invalid node type",
+        "suggestion": "Valid node types are: 'task', 'note', 'folder', 'smart_folder', 'template'",
+        "code": "INVALID_NODE_TYPE"
+    },
+    "invalid_priority": {
+        "message": "Invalid priority",
+        "suggestion": "Valid priorities are: 'low', 'medium', 'high', 'urgent'",
+        "code": "INVALID_PRIORITY"
+    }
+}
+
+def get_error_response(template_key: str, **kwargs) -> dict:
+    """Get a standardized error response from a template."""
+    template = ERROR_TEMPLATES.get(template_key, {})
+    return create_error_response(
+        error_message=template.get("message", "An error occurred"),
+        suggestion=template.get("suggestion", ""),
+        error_code=template.get("code", ""),
+        details=kwargs
+    )
 
 def cleanup_old_logs(log_dir, days_old=30):
     """Remove log files older than specified days. If days_old=0, delete all logs."""
@@ -529,7 +798,7 @@ async def add_note_to_node_id(node_id: str, title: str, content: str = "", auth_
             "error": f"Failed to add note to node {node_id}: {str(e)}"
         }
 
-async def get_all_folders(auth_token: str = "", current_node_id: str = "") -> dict:
+async def get_all_folders(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get all folder names in the user's node tree for AI to help find the right folder"""
     try:
         import httpx
@@ -542,7 +811,7 @@ async def get_all_folders(auth_token: str = "", current_node_id: str = "") -> di
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         # FastGTD API endpoint - get all notes (folders are notes with "Container folder" body)
         url = f"{FASTGTD_API_URL}/nodes/"
@@ -562,11 +831,15 @@ async def get_all_folders(auth_token: str = "", current_node_id: str = "") -> di
     
     try:
         async with httpx.AsyncClient() as client:
-            # Get all folders directly
+            # Get all folders with pagination
             response = await client.get(
                 url,
                 headers=headers,
-                params={"node_type": "folder", "limit": 1000}  # Get all folders
+                params={
+                    "node_type": "folder",
+                    "limit": min(limit, MAX_PAGE_SIZE),
+                    "offset": max(offset, 0)
+                }
             )
             
             if response.status_code in [200, 201]:
@@ -607,7 +880,7 @@ async def get_all_folders(auth_token: str = "", current_node_id: str = "") -> di
             "error": f"Failed to get folders: {str(e)}"
         }
 
-async def get_root_folders(auth_token: str = "", current_node_id: str = "") -> dict:
+async def get_root_folders(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get only root-level folders (folders with no parent)"""
     try:
         import httpx
@@ -620,7 +893,7 @@ async def get_root_folders(auth_token: str = "", current_node_id: str = "") -> d
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         # FastGTD API endpoint - get folders with no parent (root level)
         url = f"{FASTGTD_API_URL}/nodes/"
@@ -644,11 +917,15 @@ async def get_root_folders(auth_token: str = "", current_node_id: str = "") -> d
             # Note: We need to explicitly request parent_id=None via query parameter
             # But HTTP doesn't have a clean way to send null, so we'll use a special approach
             
-            # First, let's try using an empty string or special value that the API recognizes
+            # Get root folders with pagination
             response = await client.get(
                 url,
                 headers=headers,
-                params={"node_type": "folder", "limit": 1000}
+                params={
+                    "node_type": "folder",
+                    "limit": min(limit, MAX_PAGE_SIZE),
+                    "offset": max(offset, 0)
+                }
             )
             
             if response.status_code in [200, 201]:
@@ -688,7 +965,7 @@ async def get_root_folders(auth_token: str = "", current_node_id: str = "") -> d
             "error": f"Failed to get root folders: {str(e)}"
         }
 
-async def get_root_nodes(auth_token: str = "", current_node_id: str = "") -> dict:
+async def get_root_nodes(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get all root-level nodes (all node types with no parent) - tasks, notes, folders, smart folders, templates"""
     try:
         import httpx
@@ -701,7 +978,7 @@ async def get_root_nodes(auth_token: str = "", current_node_id: str = "") -> dic
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         # FastGTD API endpoint - get all nodes with no parent (root level)
         url = f"{FASTGTD_API_URL}/nodes/"
@@ -730,7 +1007,11 @@ async def get_root_nodes(auth_token: str = "", current_node_id: str = "") -> dic
                     response = await client.get(
                         url,
                         headers=headers,
-                        params={"node_type": node_type, "limit": 1000}
+                        params={
+                            "node_type": node_type,
+                            "limit": min(limit, MAX_PAGE_SIZE),
+                            "offset": max(offset, 0)
+                        }
                     )
 
                     if response.status_code in [200, 201]:
@@ -783,7 +1064,7 @@ async def get_root_nodes(auth_token: str = "", current_node_id: str = "") -> dic
             "error": f"Failed to get root nodes: {str(e)}"
         }
 
-async def get_node_children(node_id: str, node_type: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
+async def get_node_children(node_id: str, node_type: str = "", limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get immediate children of a specific node (optionally filtered by node type)"""
     try:
         import httpx
@@ -798,10 +1079,10 @@ async def get_node_children(node_id: str, node_type: str = "", auth_token: str =
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         if not node_id:
-            return {"success": False, "error": "Node ID is required"}
+            return get_error_response("node_id_required")
         
         # FastGTD API endpoint - get children of specific node
         url = f"{FASTGTD_API_URL}/nodes/"
@@ -819,8 +1100,12 @@ async def get_node_children(node_id: str, node_type: str = "", auth_token: str =
         "Authorization": f"Bearer {auth_token}"
     }
     
-    # Prepare query parameters
-    params = {"parent_id": node_id, "limit": 1000}
+    # Prepare query parameters with pagination
+    params = {
+        "parent_id": node_id,
+        "limit": min(limit, MAX_PAGE_SIZE),
+        "offset": max(offset, 0)
+    }
     if node_type:
         params["node_type"] = node_type
     
@@ -894,7 +1179,7 @@ async def get_folder_id(folder_name: str, auth_token: str = "", current_node_id:
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         if not folder_name:
             return {"success": False, "error": "Folder name is required"}
@@ -1008,10 +1293,10 @@ async def add_task_to_node_id(node_id: str, task_title: str, description: str = 
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         if not node_id:
-            return {"success": False, "error": "Node ID is required"}
+            return get_error_response("node_id_required")
             
         if not task_title:
             return {"success": False, "error": "Task title is required"}
@@ -1099,7 +1384,7 @@ async def get_node_tree(root_id: str = "", max_depth: int = 10, auth_token: str 
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         # FastGTD API endpoint for tree - the API expects root_id as path param or None
         if root_id:
@@ -1180,7 +1465,7 @@ async def get_node_tree(root_id: str = "", max_depth: int = 10, auth_token: str 
             "error": f"Failed to get node tree: {str(e)}"
         }
 
-async def search_nodes(query: str, node_type: str = "", limit: int = 50, auth_token: str = "", current_node_id: str = "") -> dict:
+async def search_nodes(query: str, node_type: str = "", limit: int = 50, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Search for nodes by title and content - perfect for finding specific tasks, notes, or folders"""
     logger.info(f"🔍 search_nodes CALLED - query='{query}', node_type='{node_type}', limit={limit}, auth_token_present={bool(auth_token)}")
     
@@ -1198,10 +1483,10 @@ async def search_nodes(query: str, node_type: str = "", limit: int = 50, auth_to
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         if not query or len(query.strip()) < 1:
-            return {"success": False, "error": "Search query is required and must be at least 1 character"}
+            return get_error_response("search_query_required")
         
         # FastGTD API endpoint for searching nodes
         url = f"{FASTGTD_API_URL}/nodes/"
@@ -1222,7 +1507,8 @@ async def search_nodes(query: str, node_type: str = "", limit: int = 50, auth_to
     # Query parameters for search
     params = {
         "search": query.strip(),
-        "limit": min(limit, 100)  # Cap at 100 for performance
+        "limit": min(limit, MAX_PAGE_SIZE),  # Cap at MAX_PAGE_SIZE for performance
+        "offset": max(offset, 0)  # Ensure non-negative offset
     }
     
     # Add node type filter if specified
@@ -1848,7 +2134,7 @@ async def move_node(node_id: str, new_parent_id: str = "", new_sort_order: int =
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not node_id:
-            return {"success": False, "error": "Node ID is required"}
+            return get_error_response("node_id_required")
         
         if not auth_token:
             return {"success": False, "error": "Authentication token is required"}
@@ -1941,7 +2227,7 @@ async def add_tag(node_id: str, tag_name: str, tag_description: str = "", tag_co
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not node_id:
-            return {"success": False, "error": "Node ID is required"}
+            return get_error_response("node_id_required")
         
         if not tag_name:
             return {"success": False, "error": "Tag name is required"}
@@ -2071,7 +2357,7 @@ async def remove_tag(node_id: str, tag_name: str, auth_token: str = "", current_
         print(f"   Auth token present: {bool(auth_token)}")
         
         if not node_id:
-            return {"success": False, "error": "Node ID is required"}
+            return get_error_response("node_id_required")
         
         if not tag_name:
             return {"success": False, "error": "Tag name is required"}
@@ -2653,7 +2939,7 @@ async def instantiate_template(template_id: str, name: str, parent_id: str = "",
             auth_token = await get_auth_token()
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         if not template_id:
             return {"success": False, "error": "Template ID is required"}
@@ -2741,7 +3027,7 @@ async def list_templates(category: str = "", limit: int = 50, offset: int = 0, a
             auth_token = await get_auth_token()
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         # FastGTD API endpoint for listing templates
         url = f"{FASTGTD_API_URL}/nodes/templates"
@@ -2824,7 +3110,7 @@ async def list_templates(category: str = "", limit: int = 50, offset: int = 0, a
         }
 
 
-async def search_templates(query: str, category: str = "", limit: int = 50, auth_token: str = "", current_node_id: str = "") -> dict:
+async def search_templates(query: str, category: str = "", limit: int = 50, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Search for templates by name or description."""
     try:
         print("🔍 MCP TOOL: search_templates")
@@ -2838,10 +3124,10 @@ async def search_templates(query: str, category: str = "", limit: int = 50, auth
             auth_token = await get_auth_token()
         
         if not auth_token:
-            return {"success": False, "error": "No authentication token provided"}
+            return get_error_response("no_auth")
         
         if not query or len(query.strip()) < 1:
-            return {"success": False, "error": "Search query is required and must be at least 1 character"}
+            return get_error_response("search_query_required")
         
         # FastGTD API endpoint for searching nodes (templates)
         url = f"{FASTGTD_API_URL}/nodes/"
@@ -2856,7 +3142,8 @@ async def search_templates(query: str, category: str = "", limit: int = 50, auth
         params = {
             "search": query.strip(),
             "node_type": "template",
-            "limit": min(limit, 100)  # Cap at 100 for performance
+            "limit": min(limit, MAX_PAGE_SIZE),  # Cap at MAX_PAGE_SIZE for performance
+            "offset": max(offset, 0)  # Ensure non-negative offset
         }
         
         print(f"   Query parameters: {params}")
@@ -3185,7 +3472,7 @@ async def delete_artifact(artifact_id: str, auth_token: str = "", current_node_i
             "error": f"Failed to delete artifact: {str(e)}"
         }
 
-async def list_node_artifacts(node_id: str, auth_token: str = "", current_node_id: str = "") -> dict:
+async def list_node_artifacts(node_id: str, limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """List all artifacts attached to a specific node."""
     try:
         logger.info(f"📋 list_node_artifacts CALLED - node_id={node_id}")
@@ -3212,9 +3499,15 @@ async def list_node_artifacts(node_id: str, auth_token: str = "", current_node_i
             "Authorization": f"Bearer {auth_token}"
         }
         
+        # Prepare pagination parameters
+        params = {
+            "limit": min(limit, MAX_PAGE_SIZE),
+            "offset": max(offset, 0)
+        }
+
         import httpx
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=headers)
+            response = await client.get(url, headers=headers, params=params)
         
         if response.status_code == 200:
             artifacts_data = response.json()
@@ -3295,7 +3588,11 @@ async def handle_list_tools():
                     "priority": {"type": "string", "description": "Priority: low, medium, high, urgent (default: medium)"}
                 },
                 "required": ["title"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="add_task_to_current_node",
@@ -3308,7 +3605,11 @@ async def handle_list_tools():
                     "priority": {"type": "string", "description": "Priority: low, medium, high, urgent (default: medium)"}
                 },
                 "required": ["title"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="add_folder_to_current_node",
@@ -3320,7 +3621,11 @@ async def handle_list_tools():
                     "description": {"type": "string", "description": "Optional description for the folder"}
                 },
                 "required": ["title"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="add_note_to_current_node",
@@ -3332,7 +3637,11 @@ async def handle_list_tools():
                     "content": {"type": "string", "description": "Note content/body (optional)"}
                 },
                 "required": ["title"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="add_note_to_node_id",
@@ -3345,34 +3654,59 @@ async def handle_list_tools():
                     "content": {"type": "string", "description": "Note content/body (optional)"}
                 },
                 "required": ["node_id", "title"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="get_all_folders",
             description="Get all folder names in the user's node tree - useful for AI to help find the right folder when user mentions one",
             inputSchema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum number of folders to return (default: 50, max: 100)"},
+                    "offset": {"type": "integer", "description": "Number of folders to skip for pagination (default: 0)"}
+                },
                 "required": []
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="get_root_folders",
             description="Get only root-level folders (folders with no parent) - useful for showing top-level organization",
             inputSchema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum number of folders to return (default: 50, max: 100)"},
+                    "offset": {"type": "integer", "description": "Number of folders to skip for pagination (default: 0)"}
+                },
                 "required": []
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="get_root_nodes",
             description="Get all root-level nodes (all types with no parent) - tasks, notes, folders, smart folders, templates - complete root overview",
             inputSchema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum number of nodes to return (default: 50, max: 100)"},
+                    "offset": {"type": "integer", "description": "Number of nodes to skip for pagination (default: 0)"}
+                },
                 "required": []
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="get_node_children",
@@ -3381,10 +3715,16 @@ async def handle_list_tools():
                 "type": "object",
                 "properties": {
                     "node_id": {"type": "string", "description": "ID of the parent node to get children from (required)"},
-                    "node_type": {"type": "string", "description": "Filter by node type: task, note, folder, smart_folder, template (optional)"}
+                    "node_type": {"type": "string", "description": "Filter by node type: task, note, folder, smart_folder, template (optional)"},
+                    "limit": {"type": "integer", "description": "Maximum number of children to return (default: 50, max: 100)"},
+                    "offset": {"type": "integer", "description": "Number of children to skip for pagination (default: 0)"}
                 },
                 "required": ["node_id"]
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="get_folder_id",
@@ -3395,7 +3735,11 @@ async def handle_list_tools():
                     "folder_name": {"type": "string", "description": "Name of the folder to find (required)"}
                 },
                 "required": ["folder_name"]
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="add_task_to_node_id",
@@ -3409,7 +3753,11 @@ async def handle_list_tools():
                     "priority": {"type": "string", "description": "Priority: low, medium, high, urgent (default: medium)"}
                 },
                 "required": ["node_id", "task_title"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="get_node_tree",
@@ -3421,7 +3769,11 @@ async def handle_list_tools():
                     "max_depth": {"type": "integer", "description": "Maximum depth to traverse (default: 10, max: 20)"}
                 },
                 "required": []
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="create_task",
@@ -3435,7 +3787,11 @@ async def handle_list_tools():
                     "parent_id": {"type": "string", "description": "Specific parent folder ID (optional - auto-detects if not provided)"}
                 },
                 "required": ["title"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="update_task",
@@ -3455,7 +3811,11 @@ async def handle_list_tools():
                     "recurrence_anchor": {"type": "string", "description": "Recurrence anchor date in ISO format (optional)"}
                 },
                 "required": ["task_id"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="search_nodes",
@@ -3465,10 +3825,15 @@ async def handle_list_tools():
                 "properties": {
                     "query": {"type": "string", "description": "Search term to look for in titles and content (required)"},
                     "node_type": {"type": "string", "description": "Filter by node type: 'task', 'note', 'folder', 'smart_folder', or 'template' (optional)"},
-                    "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50, max: 100)"}
+                    "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50, max: 100)"},
+                    "offset": {"type": "integer", "description": "Number of items to skip for pagination (default: 0)"}
                 },
                 "required": ["query"]
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="complete_task",
@@ -3479,7 +3844,11 @@ async def handle_list_tools():
                     "task_id": {"type": "string", "description": "ID of the task to complete (required)"}
                 },
                 "required": ["task_id"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="delete_task",
@@ -3490,7 +3859,11 @@ async def handle_list_tools():
                     "task_id": {"type": "string", "description": "ID of the task to delete (required)"}
                 },
                 "required": ["task_id"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="delete_folder",
@@ -3501,7 +3874,11 @@ async def handle_list_tools():
                     "folder_id": {"type": "string", "description": "ID of the folder to delete (required)"}
                 },
                 "required": ["folder_id"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="create_folder",
@@ -3514,7 +3891,11 @@ async def handle_list_tools():
                     "parent_id": {"type": "string", "description": "Specific parent folder ID (optional - auto-detects if not provided)"}
                 },
                 "required": ["title"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="move_node",
@@ -3527,7 +3908,11 @@ async def handle_list_tools():
                     "new_sort_order": {"type": "integer", "description": "New position/order within the parent (optional)"}
                 },
                 "required": ["node_id"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="add_tag",
@@ -3541,7 +3926,11 @@ async def handle_list_tools():
                     "tag_color": {"type": "string", "description": "Optional hex color code for the tag (e.g., #FF0000)"}
                 },
                 "required": ["node_id", "tag_name"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="remove_tag",
@@ -3553,7 +3942,11 @@ async def handle_list_tools():
                     "tag_name": {"type": "string", "description": "Name of the tag to remove (required)"}
                 },
                 "required": ["node_id", "tag_name"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="get_today_tasks",
@@ -3562,16 +3955,24 @@ async def handle_list_tools():
                 "type": "object",
                 "properties": {},
                 "required": []
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
-            name="get_overdue_tasks", 
+            name="get_overdue_tasks",
             description="Get all tasks that are overdue (due date in the past)",
             inputSchema={
                 "type": "object",
                 "properties": {},
                 "required": []
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="update_note",
@@ -3584,7 +3985,11 @@ async def handle_list_tools():
                     "content": {"type": "string", "description": "New content/body for the note (optional)"}
                 },
                 "required": ["note_id"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="get_smart_folder_contents",
@@ -3597,7 +4002,11 @@ async def handle_list_tools():
                     "offset": {"type": "integer", "description": "Number of items to skip for pagination (default: 0)"}
                 },
                 "required": ["smart_folder_id"]
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="instantiate_template",
@@ -3610,7 +4019,11 @@ async def handle_list_tools():
                     "parent_id": {"type": "string", "description": "Parent folder ID where to create the instance (optional)"}
                 },
                 "required": ["template_id", "name"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="list_templates",
@@ -3623,7 +4036,11 @@ async def handle_list_tools():
                     "offset": {"type": "integer", "description": "Number of templates to skip for pagination (default: 0)"}
                 },
                 "required": []
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="search_templates",
@@ -3633,10 +4050,15 @@ async def handle_list_tools():
                 "properties": {
                     "query": {"type": "string", "description": "Search query to match template names or descriptions (required)"},
                     "category": {"type": "string", "description": "Filter by category (optional)"},
-                    "limit": {"type": "integer", "description": "Maximum number of templates to return (default: 50, max: 100)"}
+                    "limit": {"type": "integer", "description": "Maximum number of templates to return (default: 50, max: 100)"},
+                    "offset": {"type": "integer", "description": "Number of templates to skip for pagination (default: 0)"}
                 },
                 "required": ["query"]
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="upload_artifact",
@@ -3649,7 +4071,11 @@ async def handle_list_tools():
                     "filename": {"type": "string", "description": "Optional filename to use for the upload (defaults to basename of file_path)"}
                 },
                 "required": ["node_id", "file_path"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=True
         ),
         Tool(
             name="download_artifact",
@@ -3661,7 +4087,11 @@ async def handle_list_tools():
                     "download_path": {"type": "string", "description": "Local path where to save the downloaded file (optional, defaults to original filename)"}
                 },
                 "required": ["artifact_id"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="delete_artifact",
@@ -3672,7 +4102,11 @@ async def handle_list_tools():
                     "artifact_id": {"type": "string", "description": "UUID of the artifact to delete (required)"}
                 },
                 "required": ["artifact_id"]
-            }
+            },
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=True
         ),
         Tool(
             name="list_node_artifacts",
@@ -3680,10 +4114,16 @@ async def handle_list_tools():
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node_id": {"type": "string", "description": "UUID of the node to get artifacts for (required)"}
+                    "node_id": {"type": "string", "description": "UUID of the node to get artifacts for (required)"},
+                    "limit": {"type": "integer", "description": "Maximum number of artifacts to return (default: 50, max: 100)"},
+                    "offset": {"type": "integer", "description": "Number of artifacts to skip for pagination (default: 0)"}
                 },
                 "required": ["node_id"]
-            }
+            },
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True
         )
     ]
     return tools
