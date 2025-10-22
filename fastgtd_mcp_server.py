@@ -11,6 +11,7 @@ from datetime import datetime
 import os
 import time
 from pathlib import Path
+import httpx
 from dotenv import load_dotenv
 from mcp.server import Server
 
@@ -118,6 +119,38 @@ class ResponseFormatInput(BaseModel):
 
     response_format: Literal["json", "markdown"] = Field(DEFAULT_RESPONSE_FORMAT, description="Response format (json or markdown)")
     detail_level: Literal["concise", "detailed"] = Field(DEFAULT_DETAIL_LEVEL, description="Detail level (concise or detailed)")
+
+class UpdateTaskInput(BaseModel):
+    """Input model for update_task"""
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(..., min_length=1, description="Task ID to update")
+    title: Optional[str] = Field(None, min_length=1, max_length=500, description="Task title")
+    description: Optional[str] = Field(None, max_length=5000, description="Task description")
+    priority: Optional[Priority] = Field(None, description="Task priority level")
+    status: Optional[TaskStatus] = Field(None, description="Task completion status")
+    due_at: Optional[str] = Field(None, description="Due date/time in ISO format")
+    earliest_start_at: Optional[str] = Field(None, description="Earliest start date/time in ISO format")
+    archived: Optional[bool] = Field(None, description="Archive status")
+    recurrence_rule: Optional[str] = Field(None, description="Recurrence rule in iCalendar format")
+    recurrence_anchor: Optional[str] = Field(None, description="Recurrence anchor date")
+
+class CreateFolderInput(BaseModel):
+    """Input model for create_folder"""
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(..., min_length=1, max_length=500, description="Folder title")
+    description: Optional[str] = Field("", max_length=5000, description="Folder description")
+    parent_id: Optional[str] = Field(None, description="Parent folder ID")
+
+class SearchTemplatesInput(BaseModel):
+    """Input model for search_templates"""
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(..., min_length=1, description="Search query text")
+    category: Optional[str] = Field("", description="Filter by category")
+    limit: int = Field(50, ge=1, le=MAX_PAGE_SIZE, description=f"Max results (1-{MAX_PAGE_SIZE})")
+    offset: int = Field(0, ge=0, description="Offset for pagination")
 
 # Utility functions for response formatting
 def truncate_response(text: str, limit: int = CHARACTER_LIMIT) -> str:
@@ -409,35 +442,31 @@ server = Server("fastgtd-mcp")
 
 async def add_task_to_inbox(title: str, description: str = "", priority: str = "medium", auth_token: str = "", current_node_id: str = "") -> dict:
     """Add a task to the user's default node (inbox)"""
-    logger.info(f"🧪 add_task_to_inbox CALLED - title='{title}', description='{description}', priority='{priority}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🧪 MCP DEBUG - add_task_to_inbox called:")
-        print(f"   Title: {title}")
-        print(f"   Description: {description}")
-        print(f"   Priority: {priority}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"add_task_to_inbox called - title='{title}', priority='{priority}'")
+
+    # Validate inputs
+    if not title or len(title.strip()) == 0:
+        return get_error_response("node_id_required")  # Reusing this as it's similar
+
+    # Validate priority
+    valid_priorities = ["low", "medium", "high", "urgent"]
+    if priority and priority not in valid_priorities:
+        return get_error_response("invalid_priority")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Create task payload for unified node system
     task_payload = {
         "node_type": "task",
-        "title": title,
+        "title": title.strip(),
         "task_data": {
             "description": description,
             "priority": priority,
@@ -445,41 +474,40 @@ async def add_task_to_inbox(title: str, description: str = "", priority: str = "
             "archived": False
         }
     }
-    
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             # First, get the user's default node (inbox)
-            if auth_token:
-                default_node_response = await client.get(
-                    f"{FASTGTD_API_URL}/settings/default-node",
-                    headers=headers
-                )
-                
-                if default_node_response.status_code == 200:
-                    default_data = default_node_response.json()
-                    default_node_id = default_data.get("node_id")
-                    print(f"📋 Default node response: {default_data}")
-                    if default_node_id:
-                        task_payload["parent_id"] = default_node_id
-                        print(f"🎯 Setting parent_id to default node: {default_node_id}")
-                    else:
-                        print(f"⚠️  No default node set for user - task will be added to root")
+            default_node_response = await client.get(
+                f"{FASTGTD_API_URL}/settings/default-node",
+                headers=headers
+            )
+
+            if default_node_response.status_code == 200:
+                default_data = default_node_response.json()
+                default_node_id = default_data.get("node_id")
+                if default_node_id:
+                    task_payload["parent_id"] = default_node_id
+                    logger.debug(f"Using default node: {default_node_id}")
                 else:
-                    print(f"⚠️  Failed to get default node: HTTP {default_node_response.status_code}")
-                    
-            print(f"📤 Final task payload: {task_payload}")
-            
+                    logger.debug("No default node set - adding to root")
+            else:
+                logger.warning(f"Failed to get default node: HTTP {default_node_response.status_code}")
+
+            # Create the task
             response = await client.post(
                 url,
                 json=task_payload,
-                headers=headers
+                headers=headers,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code in [200, 201]:
                 task_data = response.json()
                 return {
@@ -489,114 +517,143 @@ async def add_task_to_inbox(title: str, description: str = "", priority: str = "
                     "task": task_data
                 }
             else:
-                return {
-                    "success": False,
-                    "error": f"Failed to add task: HTTP {response.status_code}",
-                    "details": response.text
-                }
-                
+                return create_error_response(
+                    f"Failed to add task: HTTP {response.status_code}",
+                    f"Check your authentication and try again",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to add task to inbox: {str(e)}"
-        }
+        logger.error(f"Failed to add task to inbox: {str(e)}")
+        return create_error_response(
+            f"Failed to add task to inbox: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def add_folder_to_current_node(title: str, description: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Add a folder to the current node"""
-    try:
-        import httpx
-        
-        print(f"📁 MCP DEBUG - add_folder_to_current_node called:")
-        print(f"   Title: {title}")
-        print(f"   Description: {description}")
-        print(f"   Current node ID: {current_node_id}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not current_node_id:
-            return {"success": False, "error": "No current node ID provided"}
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/"
-        
-        # Create folder payload - folders are their own node type
-        folder_payload = {
-            "node_type": "folder",
-            "title": title,
-            "parent_id": current_node_id
-        }
+    logger.info(f"add_folder_to_current_node called - title='{title}'")
 
-        # Add description if provided
-        if description:
-            folder_payload["folder_data"] = {"description": description}
-        
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=folder_payload, headers=headers)
-            
-        if response.status_code == 200:
-            folder_data = response.json()
-            return {
-                "success": True,
-                "message": f"Folder '{title}' added to current node successfully",
-                "folder_id": folder_data.get("id"),
-                "folder": folder_data
-            }
-        else:
-            error_text = response.text
-            print(f"❌ API Error {response.status_code}: {error_text}")
-            return {
-                "success": False,
-                "error": f"API request failed with status {response.status_code}: {error_text}"
-            }
-            
+    # Validate inputs
+    if not title or len(title.strip()) == 0:
+        return create_error_response("Title is required", "Provide a folder title", "MISSING_TITLE")
+
+    if not current_node_id:
+        return create_error_response(
+            "No current node ID provided",
+            "Use create_folder(parent_id='...') to specify a parent node",
+            "MISSING_NODE_ID"
+        )
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
+    # Create folder payload - folders are their own node type
+    folder_payload = {
+        "node_type": "folder",
+        "title": title.strip(),
+        "parent_id": current_node_id
+    }
+
+    # Add description if provided
+    if description:
+        folder_payload["folder_data"] = {"description": description}
+
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.post(
+                url,
+                json=folder_payload,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
+            if response.status_code in [200, 201]:
+                folder_data = response.json()
+                return {
+                    "success": True,
+                    "message": f"Folder '{title}' added to current node successfully",
+                    "folder_id": folder_data.get("id"),
+                    "folder": folder_data
+                }
+            else:
+                return create_error_response(
+                    f"Failed to add folder: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        print(f"❌ MCP ERROR in add_folder_to_current_node: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Tool execution failed: {str(e)}"
-        }
+        logger.error(f"Failed to add folder to current node: {str(e)}")
+        return create_error_response(
+            f"Failed to add folder to current node: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def add_task_to_current_node(title: str, description: str = "", priority: str = "medium", auth_token: str = "", current_node_id: str = "") -> dict:
     """Add a task to the user's currently selected node"""
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🧪 MCP DEBUG - add_task_to_current_node called:")
-        print(f"   Title: {title}")
-        print(f"   Description: {description}")
-        print(f"   Priority: {priority}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        print(f"   Current node ID: {current_node_id}")
-        
-        if not current_node_id:
-            return {
-                "success": False,
-                "error": "No current node ID provided - cannot determine where to add task"
-            }
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"add_task_to_current_node called - title='{title}', priority='{priority}'")
+
+    # Validate inputs
+    if not title or len(title.strip()) == 0:
+        return create_error_response("Title is required", "Provide a task title", "MISSING_TITLE")
+
+    if not current_node_id:
+        return create_error_response(
+            "No current node ID provided",
+            "Use add_task_to_inbox() or add_task_to_node_id(node_id='...') instead",
+            "MISSING_NODE_ID"
+        )
+
+    # Validate priority
+    valid_priorities = ["low", "medium", "high", "urgent"]
+    if priority and priority not in valid_priorities:
+        return get_error_response("invalid_priority")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Create task payload for unified node system
     task_payload = {
         "node_type": "task",
-        "title": title,
-        "parent_id": current_node_id,  # Use provided current node directly
+        "title": title.strip(),
+        "parent_id": current_node_id,
         "task_data": {
             "description": description,
             "priority": priority,
@@ -604,22 +661,22 @@ async def add_task_to_current_node(title: str, description: str = "", priority: 
             "archived": False
         }
     }
-    
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
-    print(f"📤 Final task payload: {task_payload}")
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.post(
                 url,
                 json=task_payload,
-                headers=headers
+                headers=headers,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code in [200, 201]:
                 task_data = response.json()
                 return {
@@ -629,74 +686,77 @@ async def add_task_to_current_node(title: str, description: str = "", priority: 
                     "task": task_data
                 }
             else:
-                return {
-                    "success": False,
-                    "error": f"Failed to add task: HTTP {response.status_code}",
-                    "details": response.text
-                }
-                
+                return create_error_response(
+                    f"Failed to add task: HTTP {response.status_code}",
+                    "Check your authentication and node ID",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to add task to current node: {str(e)}"
-        }
+        logger.error(f"Failed to add task to current node: {str(e)}")
+        return create_error_response(
+            f"Failed to add task to current node: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def add_note_to_current_node(title: str, content: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Add a note to the user's currently selected node"""
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"📝 MCP DEBUG - add_note_to_current_node called:")
-        print(f"   Title: {title}")
-        print(f"   Content: {content}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        print(f"   Current node ID: {current_node_id}")
-        
-        if not current_node_id:
-            return {
-                "success": False,
-                "error": "No current node ID provided - cannot determine where to add note"
-            }
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"add_note_to_current_node called - title='{title}'")
+
+    # Validate inputs
+    if not title or len(title.strip()) == 0:
+        return create_error_response("Title is required", "Provide a note title", "MISSING_TITLE")
+
+    if not current_node_id:
+        return create_error_response(
+            "No current node ID provided",
+            "Use add_note_to_node_id(node_id='...') to specify a parent node",
+            "MISSING_NODE_ID"
+        )
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Create note payload for unified node system
     note_payload = {
         "node_type": "note",
-        "title": title,
-        "parent_id": current_node_id,  # Use provided current node directly
+        "title": title.strip(),
+        "parent_id": current_node_id,
         "note_data": {
             "body": content
         }
     }
-    
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
-    print(f"📤 Final note payload: {note_payload}")
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.post(
                 url,
                 json=note_payload,
-                headers=headers
+                headers=headers,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code in [200, 201]:
                 note_data = response.json()
                 return {
@@ -706,78 +766,74 @@ async def add_note_to_current_node(title: str, content: str = "", auth_token: st
                     "note": note_data
                 }
             else:
-                return {
-                    "success": False,
-                    "error": f"Failed to add note: HTTP {response.status_code}",
-                    "details": response.text
-                }
-                
+                return create_error_response(
+                    f"Failed to add note: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to add note to current node: {str(e)}"
-        }
+        logger.error(f"Failed to add note to current node: {str(e)}")
+        return create_error_response(
+            f"Failed to add note to current node: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def add_note_to_node_id(node_id: str, title: str, content: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Add a note to a specific node by its ID"""
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"📝 MCP DEBUG - add_note_to_node_id called:")
-        print(f"   Node ID: {node_id}")
-        print(f"   Title: {title}")
-        print(f"   Content: {content}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not node_id:
-            return {
-                "success": False,
-                "error": "Node ID is required to add note to specific node"
-            }
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"add_note_to_node_id called - node_id='{node_id}', title='{title}'")
+
+    # Validate inputs
+    if not node_id or len(node_id.strip()) == 0:
+        return get_error_response("node_id_required")
+
+    if not title or len(title.strip()) == 0:
+        return create_error_response("Title is required", "Provide a note title", "MISSING_TITLE")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Create note payload for unified node system
     note_payload = {
         "node_type": "note",
-        "title": title,
-        "parent_id": node_id,  # Use provided node_id as parent
+        "title": title.strip(),
+        "parent_id": node_id.strip(),
         "note_data": {
             "body": content
         }
     }
-    
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
-    print(f"📤 Final note payload: {note_payload}")
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.post(
                 url,
                 json=note_payload,
-                headers=headers
+                headers=headers,
+                timeout=HTTP_TIMEOUT
             )
-            
-            print(f"📥 API Response Status: {response.status_code}")
-            print(f"📥 API Response Text: {response.text}")
-            
-            if response.status_code == 200:
+
+            if response.status_code in [200, 201]:
                 note_data = response.json()
                 return {
                     "success": True,
@@ -786,52 +842,49 @@ async def add_note_to_node_id(node_id: str, title: str, content: str = "", auth_
                     "note": note_data
                 }
             else:
-                return {
-                    "success": False,
-                    "error": f"Failed to add note: HTTP {response.status_code}",
-                    "details": response.text
-                }
-                
+                return create_error_response(
+                    f"Failed to add note: HTTP {response.status_code}",
+                    "Check your authentication and node ID",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to add note to node {node_id}: {str(e)}"
-        }
+        logger.error(f"Failed to add note to node {node_id}: {str(e)}")
+        return create_error_response(
+            f"Failed to add note to node {node_id}: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def get_all_folders(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get all folder names in the user's node tree for AI to help find the right folder"""
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"📁 MCP DEBUG - get_all_folders called:")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        # FastGTD API endpoint - get all notes (folders are notes with "Container folder" body)
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"get_all_folders called - limit={limit}, offset={offset}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
+
     try:
-        async with httpx.AsyncClient() as client:
-            # Get all folders with pagination
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
@@ -839,9 +892,10 @@ async def get_all_folders(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_
                     "node_type": "folder",
                     "limit": min(limit, MAX_PAGE_SIZE),
                     "offset": max(offset, 0)
-                }
+                },
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code in [200, 201]:
                 nodes_data = response.json()
                 folders = []
@@ -868,56 +922,49 @@ async def get_all_folders(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_
                     "folders": folders
                 }
             else:
-                return {
-                    "success": False,
-                    "error": f"Failed to retrieve folders: HTTP {response.status_code}",
-                    "details": response.text
-                }
-                
+                return create_error_response(
+                    f"Failed to retrieve folders: HTTP {response.status_code}",
+                    "Check your authentication",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to get folders: {str(e)}"
-        }
+        logger.error(f"Failed to get folders: {str(e)}")
+        return create_error_response(
+            f"Failed to get folders: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def get_root_folders(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get only root-level folders (folders with no parent)"""
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"📁 MCP DEBUG - get_root_folders called:")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        # FastGTD API endpoint - get folders with no parent (root level)
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"get_root_folders called - limit={limit}, offset={offset}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
+
     try:
-        async with httpx.AsyncClient() as client:
-            # Get folders with no parent (root level)
-            # Note: We need to explicitly request parent_id=None via query parameter
-            # But HTTP doesn't have a clean way to send null, so we'll use a special approach
-            
-            # Get root folders with pagination
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
@@ -925,9 +972,10 @@ async def get_root_folders(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth
                     "node_type": "folder",
                     "limit": min(limit, MAX_PAGE_SIZE),
                     "offset": max(offset, 0)
-                }
+                },
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code in [200, 201]:
                 nodes_data = response.json()
                 folders = []
@@ -954,51 +1002,50 @@ async def get_root_folders(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth
                     "folders": folders
                 }
             else:
-                return {
-                    "success": False,
-                    "error": f"HTTP {response.status_code}: {response.text}"
-                }
-                
+                return create_error_response(
+                    f"Failed to retrieve root folders: HTTP {response.status_code}",
+                    "Check your authentication",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to get root folders: {str(e)}"
-        }
+        logger.error(f"Failed to get root folders: {str(e)}")
+        return create_error_response(
+            f"Failed to get root folders: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def get_root_nodes(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get all root-level nodes (all node types with no parent) - tasks, notes, folders, smart folders, templates"""
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🌳 MCP DEBUG - get_root_nodes called:")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        # FastGTD API endpoint - get all nodes with no parent (root level)
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"get_root_nodes called - limit={limit}, offset={offset}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
+
     try:
-        async with httpx.AsyncClient() as client:
-            # Get root nodes for each type separately (API doesn't support getting all types at once)
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            # Get root nodes for each type separately
             node_types = ['folder', 'smart_folder', 'template', 'task', 'note']
             all_nodes = []
 
@@ -1011,7 +1058,8 @@ async def get_root_nodes(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_t
                             "node_type": node_type,
                             "limit": min(limit, MAX_PAGE_SIZE),
                             "offset": max(offset, 0)
-                        }
+                        },
+                        timeout=HTTP_TIMEOUT
                     )
 
                     if response.status_code in [200, 201]:
@@ -1025,7 +1073,7 @@ async def get_root_nodes(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_t
 
                         all_nodes.extend(nodes)
                 except Exception as e:
-                    print(f"⚠️ Warning: Failed to get {node_type} nodes: {e}")
+                    logger.debug(f"Failed to get {node_type} nodes: {e}")
                     continue
 
             # Filter to only root level nodes (parent_id is None/null)
@@ -1057,71 +1105,73 @@ async def get_root_nodes(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_t
                     "notes": len([n for n in root_nodes if n.get('node_type') == 'note'])
                 }
             }
-                
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to get root nodes: {str(e)}"
-        }
+        logger.error(f"Failed to get root nodes: {str(e)}")
+        return create_error_response(
+            f"Failed to get root nodes: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def get_node_children(node_id: str, node_type: str = "", limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get immediate children of a specific node (optionally filtered by node type)"""
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"👶 MCP DEBUG - get_node_children called:")
-        print(f"   Node ID: {node_id}")
-        print(f"   Node type filter: {node_type}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        if not node_id:
-            return get_error_response("node_id_required")
-        
-        # FastGTD API endpoint - get children of specific node
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"get_node_children called - node_id='{node_id}', node_type='{node_type}'")
+
+    # Validate inputs
+    if not node_id or len(node_id.strip()) == 0:
+        return get_error_response("node_id_required")
+
+    # Validate node_type if provided
+    if node_type:
+        valid_types = ["task", "note", "folder", "smart_folder", "template"]
+        if node_type not in valid_types:
+            return get_error_response("invalid_node_type")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
+
     # Prepare query parameters with pagination
     params = {
-        "parent_id": node_id,
+        "parent_id": node_id.strip(),
         "limit": min(limit, MAX_PAGE_SIZE),
         "offset": max(offset, 0)
     }
     if node_type:
         params["node_type"] = node_type
-    
+
     try:
-        async with httpx.AsyncClient() as client:
-            # Get children of the specified node
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
-                params=params
+                params=params,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code in [200, 201]:
                 nodes_data = response.json()
                 children = []
-                
+
                 # Extract child node information
                 for node in nodes_data:
                     child_info = {
@@ -1131,7 +1181,7 @@ async def get_node_children(node_id: str, node_type: str = "", limit: int = DEFA
                         "created_at": node.get("created_at"),
                         "updated_at": node.get("updated_at")
                     }
-                    
+
                     # Add type-specific data
                     if node.get("node_type") == "task":
                         task_data = node.get("task_data", {})
@@ -1140,9 +1190,9 @@ async def get_node_children(node_id: str, node_type: str = "", limit: int = DEFA
                     elif node.get("node_type") == "note":
                         note_data = node.get("note_data", {})
                         child_info["body_preview"] = (note_data.get("body", ""))[:100] + "..." if len(note_data.get("body", "")) > 100 else note_data.get("body", "")
-                    
+
                     children.append(child_info)
-                
+
                 type_filter_msg = f" of type '{node_type}'" if node_type else ""
                 return {
                     "success": True,
@@ -1152,63 +1202,60 @@ async def get_node_children(node_id: str, node_type: str = "", limit: int = DEFA
                     "node_type_filter": node_type
                 }
             else:
-                return {
-                    "success": False,
-                    "error": f"HTTP {response.status_code}: {response.text}"
-                }
-                
+                return create_error_response(
+                    f"Failed to get node children: HTTP {response.status_code}",
+                    "Check your authentication and node ID",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to get node children: {str(e)}"
-        }
+        logger.error(f"Failed to get node children: {str(e)}")
+        return create_error_response(
+            f"Failed to get node children: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def get_folder_id(folder_name: str, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get folder ID by folder name - useful for finding the specific folder to work with"""
-    logger.info(f"🔍 get_folder_id CALLED - folder_name='{folder_name}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🔍 MCP DEBUG - get_folder_id called:")
-        print(f"   Folder name: {folder_name}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        if not folder_name:
-            return {"success": False, "error": "Folder name is required"}
-        
-        # FastGTD API endpoint - get all notes (folders are notes with "Container folder" body)
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"get_folder_id called - folder_name='{folder_name}'")
+
+    # Validate inputs
+    if not folder_name or len(folder_name.strip()) == 0:
+        return create_error_response("Folder name is required", "Provide a folder name to search for", "MISSING_FOLDER_NAME")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
+
     try:
-        async with httpx.AsyncClient() as client:
-            # Get all folders (folders are their own node type)
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
-                params={"node_type": "folder", "limit": 1000}  # Get all folders
+                params={"node_type": "folder", "limit": 1000},
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code in [200, 201]:
                 nodes_data = response.json()
 
@@ -1232,7 +1279,7 @@ async def get_folder_id(folder_name: str, auth_token: str = "", current_node_id:
                                 "folder_name": node.get("title"),
                                 "folder_description": folder_data.get("description", "") if isinstance(folder_data, dict) else ""
                             }
-                            logger.info(f"🔍 get_folder_id SUCCESS - found folder_id={result['folder_id']} for '{folder_name}'")
+                            logger.debug(f"Found folder_id={result['folder_id']} for '{folder_name}'")
                             return result
 
                 # If exact match not found, check for partial matches
@@ -1245,77 +1292,73 @@ async def get_folder_id(folder_name: str, auth_token: str = "", current_node_id:
                                 "id": node.get("id"),
                                 "title": node.get("title")
                             })
-                
+
                 if partial_matches:
-                    result = {
+                    logger.debug(f"No exact match for '{folder_name}', found {len(partial_matches)} similar")
+                    return {
                         "success": False,
                         "error": f"No exact match found for '{folder_name}', but found similar folders",
                         "suggestions": partial_matches
                     }
-                    logger.warning(f"🔍 get_folder_id PARTIAL MATCH - no exact match for '{folder_name}', found {len(partial_matches)} similar")
-                    return result
                 else:
-                    result = {
-                        "success": False,
-                        "error": f"No folder found with name '{folder_name}'"
-                    }
-                    logger.error(f"🔍 get_folder_id FAILED - no folder found for '{folder_name}'")
-                    return result
+                    return create_error_response(
+                        f"No folder found with name '{folder_name}'",
+                        "Use get_all_folders() to see available folders",
+                        "FOLDER_NOT_FOUND"
+                    )
             else:
-                return {
-                    "success": False,
-                    "error": f"Failed to retrieve folders: HTTP {response.status_code}",
-                    "details": response.text
-                }
-                
+                return create_error_response(
+                    f"Failed to retrieve folders: HTTP {response.status_code}",
+                    "Check your authentication",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to find folder: {str(e)}"
-        }
+        logger.error(f"Failed to find folder: {str(e)}")
+        return create_error_response(
+            f"Failed to find folder: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def add_task_to_node_id(node_id: str, task_title: str, description: str = "", priority: str = "medium", auth_token: str = "", current_node_id: str = "") -> dict:
     """Add a task to a specific node by node ID and return the new task's ID"""
-    logger.info(f"🎯 add_task_to_node_id CALLED - node_id='{node_id}', task_title='{task_title}', description='{description}', priority='{priority}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🎯 MCP DEBUG - add_task_to_node_id called:")
-        print(f"   Node ID: {node_id}")
-        print(f"   Task title: {task_title}")
-        print(f"   Description: {description}")
-        print(f"   Priority: {priority}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        if not node_id:
-            return get_error_response("node_id_required")
-            
-        if not task_title:
-            return {"success": False, "error": "Task title is required"}
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"add_task_to_node_id called - node_id='{node_id}', task_title='{task_title}'")
+
+    # Validate inputs
+    if not node_id:
+        return get_error_response("node_id_required")
+
+    if not task_title or len(task_title.strip()) == 0:
+        return create_error_response("Task title is required", "Provide a task title", "MISSING_TITLE")
+
+    # Validate priority
+    valid_priorities = ["low", "medium", "high", "urgent"]
+    if priority and priority not in valid_priorities:
+        return get_error_response("invalid_priority")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Create task payload for unified node system
     task_payload = {
         "node_type": "task",
-        "title": task_title,
-        "parent_id": node_id,  # Use the provided node ID
+        "title": task_title.strip(),
+        "parent_id": node_id,
         "task_data": {
             "description": description,
             "priority": priority,
@@ -1323,111 +1366,107 @@ async def add_task_to_node_id(node_id: str, task_title: str, description: str = 
             "archived": False
         }
     }
-    
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
-    print(f"📤 Final task payload: {task_payload}")
-    
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.post(
                 url,
                 json=task_payload,
-                headers=headers
+                headers=headers,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code in [200, 201]:
                 task_data = response.json()
                 task_id = task_data.get("id")
-                result = {
+                logger.info(f"add_task_to_node_id success - created task_id={task_id} in node_id={node_id}")
+                return {
                     "success": True,
                     "message": f"Task '{task_title}' added to node successfully",
                     "task_id": task_id,
                     "node_id": node_id,
                     "task_title": task_title
                 }
-                logger.info(f"🎯 add_task_to_node_id SUCCESS - created task_id={task_id} in node_id={node_id}")
-                return result
             else:
-                result = {
-                    "success": False,
-                    "error": f"Failed to add task: HTTP {response.status_code}",
-                    "details": response.text
-                }
-                logger.error(f"🎯 add_task_to_node_id FAILED - HTTP {response.status_code} for task '{task_title}' to node {node_id}")
-                return result
-                
+                logger.error(f"add_task_to_node_id failed - HTTP {response.status_code}")
+                return create_error_response(
+                    f"Failed to add task: HTTP {response.status_code}",
+                    "Check your authentication and node ID",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to add task to node: {str(e)}"
-        }
+        logger.error(f"Failed to add task to node: {str(e)}")
+        return create_error_response(
+            f"Failed to add task to node: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def get_node_tree(root_id: str = "", max_depth: int = 10, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get the node tree structure starting from a root node (or from root if no ID provided)"""
-    logger.info(f"🌳 get_node_tree CALLED - root_id='{root_id}', max_depth={max_depth}, auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🌳 MCP DEBUG - get_node_tree called:")
-        print(f"   Root ID: {root_id}")
-        print(f"   Max depth: {max_depth}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        # FastGTD API endpoint for tree - the API expects root_id as path param or None
-        if root_id:
-            url = f"{FASTGTD_API_URL}/nodes/tree/{root_id}"
-        else:
-            # For root/no specific node, we'll need to call the root endpoint
-            # First let's try to get nodes at the root level
-            url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"get_node_tree called - root_id='{root_id}', max_depth={max_depth}")
+
+    # Validate max_depth
+    if max_depth < 1 or max_depth > MAX_TREE_DEPTH:
+        return create_error_response(
+            f"max_depth must be between 1 and {MAX_TREE_DEPTH}",
+            f"Use a value between 1 and {MAX_TREE_DEPTH}",
+            "INVALID_DEPTH"
+        )
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint for tree
+    if root_id:
+        url = f"{FASTGTD_API_URL}/nodes/tree/{root_id.strip()}"
+    else:
+        url = f"{FASTGTD_API_URL}/nodes/"
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
+
     # Query parameters
     params = {}
     if root_id:
         params["max_depth"] = max_depth
     else:
-        # For listing nodes, use different params - don't send parent_id at all for root
-        params["limit"] = 100  # Reasonable limit
-    
+        params["limit"] = 100
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
-                params=params
+                params=params,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code == 200:
                 data = response.json()
-                
+
                 if root_id:
-                    # This is tree format
                     result = {
                         "success": True,
                         "message": f"Retrieved node tree from {root_id} (depth: {max_depth})",
@@ -1436,98 +1475,94 @@ async def get_node_tree(root_id: str = "", max_depth: int = 10, auth_token: str 
                         "item_count": data.get("total_count", 0),
                         "format": "tree"
                     }
-                    logger.info(f"🌳 get_node_tree SUCCESS - retrieved tree with {result['item_count']} items")
+                    logger.debug(f"Retrieved tree with {result['item_count']} items")
                 else:
-                    # This is a list of root nodes
                     result = {
                         "success": True,
-                        "message": f"Retrieved root level nodes",
+                        "message": "Retrieved root level nodes",
                         "nodes": data,
                         "root_id": "root",
                         "item_count": len(data) if isinstance(data, list) else 1,
                         "format": "list"
                     }
-                    logger.info(f"🌳 get_node_tree SUCCESS - retrieved {result['item_count']} root nodes")
-                
+                    logger.debug(f"Retrieved {result['item_count']} root nodes")
+
                 return result
             else:
-                result = {
-                    "success": False,
-                    "error": f"Failed to get node tree: HTTP {response.status_code}",
-                    "details": response.text
-                }
-                logger.error(f"🌳 get_node_tree FAILED - HTTP {response.status_code}")
-                return result
-                
+                return create_error_response(
+                    f"Failed to get node tree: HTTP {response.status_code}",
+                    "Check your authentication and node ID",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to get node tree: {str(e)}"
-        }
+        logger.error(f"Failed to get node tree: {str(e)}")
+        return create_error_response(
+            f"Failed to get node tree: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def search_nodes(query: str, node_type: str = "", limit: int = 50, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Search for nodes by title and content - perfect for finding specific tasks, notes, or folders"""
-    logger.info(f"🔍 search_nodes CALLED - query='{query}', node_type='{node_type}', limit={limit}, auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🔍 MCP DEBUG - search_nodes called:")
-        print(f"   Query: {query}")
-        print(f"   Node type filter: {node_type}")
-        print(f"   Limit: {limit}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        if not query or len(query.strip()) < 1:
-            return get_error_response("search_query_required")
-        
-        # FastGTD API endpoint for searching nodes
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"search_nodes called - query='{query}', node_type='{node_type}', limit={limit}")
+
+    # Validate inputs
+    if not query or len(query.strip()) < 1:
+        return get_error_response("search_query_required")
+
+    # Validate node type if specified
+    if node_type and node_type not in ["task", "note", "folder", "smart_folder", "template"]:
+        return get_error_response("invalid_node_type")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint for searching nodes
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
+
     # Query parameters for search
     params = {
         "search": query.strip(),
-        "limit": min(limit, MAX_PAGE_SIZE),  # Cap at MAX_PAGE_SIZE for performance
-        "offset": max(offset, 0)  # Ensure non-negative offset
+        "limit": min(limit, MAX_PAGE_SIZE),
+        "offset": max(offset, 0)
     }
-    
+
     # Add node type filter if specified
-    if node_type and node_type in ["task", "note", "folder", "smart_folder", "template"]:
+    if node_type:
         params["node_type"] = node_type
-    
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
-                params=params
+                params=params,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code == 200:
                 results = response.json()
                 result_count = len(results) if isinstance(results, list) else 1
-                
-                result = {
+
+                return {
                     "success": True,
                     "message": f"Found {result_count} result(s) for '{query}'",
                     "query": query,
@@ -1535,55 +1570,54 @@ async def search_nodes(query: str, node_type: str = "", limit: int = 50, offset:
                     "results": results,
                     "result_count": result_count
                 }
-                logger.info(f"🔍 search_nodes SUCCESS - found {result_count} results for '{query}'")
-                return result
             else:
-                result = {
-                    "success": False,
-                    "error": f"Failed to search nodes: HTTP {response.status_code}",
-                    "details": response.text
-                }
-                logger.error(f"🔍 search_nodes FAILED - HTTP {response.status_code} for query '{query}'")
-                return result
-                
+                return create_error_response(
+                    f"Search failed: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to search nodes: {str(e)}"
-        }
+        logger.error(f"search_nodes failed: {str(e)}")
+        return create_error_response(
+            f"search_nodes failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def create_task(title: str, description: str = "", priority: str = "medium", parent_id: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Create a new task with simplified interface - auto-detects best location"""
-    logger.info(f"🧪 create_task CALLED - title='{title}', description='{description}', priority='{priority}', parent_id='{parent_id}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🧪 MCP DEBUG - create_task called:")
-        print(f"   Title: {title}")
-        print(f"   Description: {description}")
-        print(f"   Priority: {priority}")
-        print(f"   Parent ID: {parent_id}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"create_task called - title='{title}', priority='{priority}', parent_id='{parent_id}'")
+
+    # Validate inputs
+    if not title or len(title.strip()) == 0:
+        return create_error_response("Title is required", "Provide a task title", "MISSING_TITLE")
+
+    # Validate priority
+    if priority and priority not in ["low", "medium", "high", "urgent"]:
+        return get_error_response("invalid_priority")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
     # Create task payload for unified node system
     task_payload = {
         "node_type": "task",
-        "title": title,
+        "title": title.strip(),
         "task_data": {
             "description": description,
             "priority": priority,
@@ -1591,47 +1625,47 @@ async def create_task(title: str, description: str = "", priority: str = "medium
             "archived": False
         }
     }
-    
+
     # Determine parent location
     if parent_id:
         task_payload["parent_id"] = parent_id
     elif current_node_id:
         task_payload["parent_id"] = current_node_id
-        print(f"🎯 Using current node as parent: {current_node_id}")
-    else:
-        # Try to get user's default node (inbox)
-        print("🎯 No parent specified, trying to get default node...")
-    
+        logger.debug(f"Using current node as parent: {current_node_id}")
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             # If no parent specified, get default node
-            if not parent_id and not current_node_id and auth_token:
+            if not parent_id and not current_node_id:
                 default_node_response = await client.get(
                     f"{FASTGTD_API_URL}/settings/default-node",
-                    headers=headers
+                    headers=headers,
+                    timeout=HTTP_TIMEOUT
                 )
-                
+
                 if default_node_response.status_code == 200:
                     default_data = default_node_response.json()
                     default_node_id = default_data.get("node_id")
                     if default_node_id:
                         task_payload["parent_id"] = default_node_id
-                        print(f"🎯 Using default node as parent: {default_node_id}")
-            
+                        logger.debug(f"Using default node as parent: {default_node_id}")
+
             # Create the task
-            response = await client.post(url, json=task_payload, headers=headers)
-            
-            print(f"📡 API Response status: {response.status_code}")
-            
+            response = await client.post(
+                url,
+                json=task_payload,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
             if response.status_code in [200, 201]:
                 task_data = response.json()
-                print(f"✅ Task created successfully: {task_data}")
-                
                 return {
                     "success": True,
                     "message": f"Task '{title}' created successfully",
@@ -1639,62 +1673,55 @@ async def create_task(title: str, description: str = "", priority: str = "medium
                     "task": task_data
                 }
             else:
-                error_msg = f"Failed to create task: HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
+                return create_error_response(
+                    f"Failed to create task: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        error_msg = f"Failed to create task: {str(e)}"
-        print(f"❌ {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg
-        }
+        logger.error(f"create_task failed: {str(e)}")
+        return create_error_response(
+            f"create_task failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def update_task(task_id: str, title: str = "", description: str = "", priority: str = "", status: str = "", due_at: str = "", earliest_start_at: str = "", archived: bool = None, recurrence_rule: str = "", recurrence_anchor: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Update an existing task's properties"""
-    logger.info(f"🧪 update_task CALLED - task_id='{task_id}', title='{title}', description='{description}', priority='{priority}', status='{status}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🧪 MCP DEBUG - update_task called:")
-        print(f"   Task ID: {task_id}")
-        print(f"   Title: {title}")
-        print(f"   Description: {description}")
-        print(f"   Priority: {priority}")
-        print(f"   Status: {status}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/{task_id}"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"update_task called - task_id='{task_id}'")
+
+    # Validate inputs
+    if not task_id or len(task_id.strip()) == 0:
+        return get_error_response("node_id_required")
+
+    # Validate priority if specified
+    if priority and priority not in ["low", "medium", "high", "urgent"]:
+        return get_error_response("invalid_priority")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/{task_id}"
+
     # Build update payload - only include fields that are provided
     update_payload = {}
-    
+
     if title:
-        update_payload["title"] = title
-    
+        update_payload["title"] = title.strip()
+
     # Task-specific data updates
     task_data_updates = {}
     if description:
@@ -1707,39 +1734,41 @@ async def update_task(task_id: str, title: str = "", description: str = "", prio
         task_data_updates["due_at"] = due_at
     if earliest_start_at:
         task_data_updates["earliest_start_at"] = earliest_start_at
-    if archived is not None:  # Allow setting to False
+    if archived is not None:
         task_data_updates["archived"] = archived
     if recurrence_rule:
         task_data_updates["recurrence_rule"] = recurrence_rule
     if recurrence_anchor:
         task_data_updates["recurrence_anchor"] = recurrence_anchor
-    
+
     if task_data_updates:
         update_payload["task_data"] = task_data_updates
-    
+
     # Check if we have anything to update
     if not update_payload:
-        return {
-            "success": False,
-            "error": "No fields provided to update. Please specify title, description, priority, or status."
-        }
-    
+        return create_error_response(
+            "No fields provided to update",
+            "Specify at least one field: title, description, priority, status, due_at, earliest_start_at, archived, recurrence_rule, or recurrence_anchor",
+            "MISSING_FIELDS"
+        )
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
-            # Update the task
-            response = await client.put(url, json=update_payload, headers=headers)
-            
-            print(f"📡 API Response status: {response.status_code}")
-            
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.put(
+                url,
+                json=update_payload,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
             if response.status_code == 200:
                 task_data = response.json()
-                print(f"✅ Task updated successfully: {task_data}")
-                
                 return {
                     "success": True,
                     "message": f"Task '{task_id}' updated successfully",
@@ -1753,78 +1782,69 @@ async def update_task(task_id: str, title: str = "", description: str = "", prio
                     }
                 }
             else:
-                error_msg = f"Failed to update task: HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
+                return create_error_response(
+                    f"Failed to update task: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        error_msg = f"Failed to update task: {str(e)}"
-        print(f"❌ {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg
-        }
+        logger.error(f"update_task failed: {str(e)}")
+        return create_error_response(
+            f"update_task failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def complete_task(task_id: str, auth_token: str = "", current_node_id: str = "") -> dict:
     """Mark a task as completed"""
-    logger.info(f"✅ complete_task CALLED - task_id='{task_id}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"✅ MCP DEBUG - complete_task called:")
-        print(f"   Task ID: {task_id}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not task_id:
-            return {"success": False, "error": "Task ID is required"}
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/{task_id}"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"complete_task called - task_id='{task_id}'")
+
+    # Validate inputs
+    if not task_id or len(task_id.strip()) == 0:
+        return get_error_response("node_id_required")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/{task_id}"
+
     # Update payload to mark as done
     update_payload = {
         "task_data": {
             "status": "done"
         }
     }
-    
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
-            # Update the task status to done
-            response = await client.put(url, json=update_payload, headers=headers)
-            
-            print(f"📡 API Response status: {response.status_code}")
-            
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.put(
+                url,
+                json=update_payload,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
             if response.status_code == 200:
                 task_data = response.json()
-                print(f"✅ Task completed successfully: {task_data}")
-                
                 return {
                     "success": True,
                     "message": f"Task '{task_id}' marked as completed",
@@ -1835,256 +1855,226 @@ async def complete_task(task_id: str, auth_token: str = "", current_node_id: str
                     }
                 }
             else:
-                error_msg = f"Failed to complete task: HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
+                return create_error_response(
+                    f"Failed to complete task: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        error_msg = f"Failed to complete task: {str(e)}"
-        print(f"❌ {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg
-        }
+        logger.error(f"complete_task failed: {str(e)}")
+        return create_error_response(
+            f"complete_task failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def delete_folder(folder_id: str, auth_token: str = "", current_node_id: str = "") -> dict:
     """Delete a folder permanently (will also delete all contents)"""
-    logger.info(f"🗑️ delete_folder CALLED - folder_id='{folder_id}', auth_token_present={bool(auth_token)}")
+    logger.info(f"delete_folder called - folder_id='{folder_id}'")
 
-    try:
-        import httpx
+    # Validate inputs
+    if not folder_id or len(folder_id.strip()) == 0:
+        return get_error_response("node_id_required")
 
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
 
-        print(f"🗑️ MCP DEBUG - delete_folder called:")
-        print(f"   Folder ID: {folder_id}")
-        print(f"   Auth token present: {bool(auth_token)}")
+    if not auth_token:
+        return get_error_response("no_auth")
 
-        if not folder_id:
-            return {"success": False, "error": "Folder ID is required"}
-
-        # FastGTD API endpoint (same as for tasks - folders are nodes)
-        url = f"{FASTGTD_API_URL}/nodes/{folder_id}"
-
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/{folder_id}"
 
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
 
     try:
-        async with httpx.AsyncClient() as client:
-            # Delete the folder
-            response = await client.delete(url, headers=headers)
-
-            print(f"📡 API Response status: {response.status_code}")
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.delete(
+                url,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
 
             if response.status_code in [204, 200]:
-                print(f"🗑️ Folder deleted successfully")
                 return {
                     "success": True,
                     "message": "Folder deleted successfully",
                     "folder_id": folder_id
                 }
             elif response.status_code == 404:
-                return {
-                    "success": False,
-                    "error": "Folder not found"
-                }
+                return create_error_response(
+                    "Folder not found",
+                    "Check the folder ID and try again",
+                    "NOT_FOUND"
+                )
             elif response.status_code == 403:
-                return {
-                    "success": False,
-                    "error": "Permission denied - cannot delete this folder"
-                }
+                return create_error_response(
+                    "Permission denied",
+                    "You do not have permission to delete this folder",
+                    "FORBIDDEN"
+                )
             else:
-                error_msg = f"Failed to delete folder: HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {response.text}"
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
+                return create_error_response(
+                    f"Failed to delete folder: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
 
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        print(f"❌ MCP ERROR in delete_folder: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Tool execution failed: {str(e)}"
-        }
+        logger.error(f"delete_folder failed: {str(e)}")
+        return create_error_response(
+            f"delete_folder failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def delete_task(task_id: str, auth_token: str = "", current_node_id: str = "") -> dict:
     """Delete a task permanently"""
-    logger.info(f"🗑️ delete_task CALLED - task_id='{task_id}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🗑️ MCP DEBUG - delete_task called:")
-        print(f"   Task ID: {task_id}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not task_id:
-            return {"success": False, "error": "Task ID is required"}
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/{task_id}"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"delete_task called - task_id='{task_id}'")
+
+    # Validate inputs
+    if not task_id or len(task_id.strip()) == 0:
+        return get_error_response("node_id_required")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/{task_id}"
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
-            # Delete the task
-            response = await client.delete(url, headers=headers)
-            
-            print(f"📡 API Response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                print(f"🗑️ Task deleted successfully")
-                
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.delete(
+                url,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
+            if response.status_code in [200, 204]:
                 return {
                     "success": True,
                     "message": f"Task '{task_id}' deleted successfully"
                 }
             else:
-                error_msg = f"Failed to delete task: HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
+                return create_error_response(
+                    f"Failed to delete task: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        error_msg = f"Failed to delete task: {str(e)}"
-        print(f"❌ {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg
-        }
+        logger.error(f"delete_task failed: {str(e)}")
+        return create_error_response(
+            f"delete_task failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def create_folder(title: str, description: str = "", parent_id: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Create a new folder - auto-detects best location (current folder or root)"""
-    logger.info(f"📁 create_folder CALLED - title='{title}', parent_id='{parent_id}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"📁 MCP DEBUG - create_folder called:")
-        print(f"   Title: {title}")
-        print(f"   Description: {description}")
-        print(f"   Parent ID: {parent_id}")
-        print(f"   Current node ID: {current_node_id}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not title:
-            return {"success": False, "error": "Folder title is required"}
-        
-        # FastGTD API endpoint
-        url = f"{FASTGTD_API_URL}/nodes/"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
-    # Create folder payload - folders are their own node type
+    logger.info(f"create_folder called - title='{title}', parent_id='{parent_id}'")
+
+    # Validate inputs
+    if not title or len(title.strip()) == 0:
+        return create_error_response("Title is required", "Provide a folder title", "MISSING_TITLE")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint
+    url = f"{FASTGTD_API_URL}/nodes/"
+
+    # Create folder payload
     folder_payload = {
         "node_type": "folder",
-        "title": title
+        "title": title.strip()
     }
 
     # Add description if provided
     if description:
         folder_payload["folder_data"] = {"description": description}
-    
+
     # Determine parent location
     if parent_id:
         folder_payload["parent_id"] = parent_id
-        print(f"🎯 Using specified parent: {parent_id}")
     elif current_node_id:
         folder_payload["parent_id"] = current_node_id
-        print(f"🎯 Using current node as parent: {current_node_id}")
-    else:
-        # Try to get user's default node or create at root
-        print("🎯 No parent specified, trying to get default node...")
-    
+        logger.debug(f"Using current node as parent: {current_node_id}")
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             # If no parent specified, get default node
-            if not parent_id and not current_node_id and auth_token:
+            if not parent_id and not current_node_id:
                 default_node_response = await client.get(
                     f"{FASTGTD_API_URL}/settings/default-node",
-                    headers=headers
+                    headers=headers,
+                    timeout=HTTP_TIMEOUT
                 )
-                
+
                 if default_node_response.status_code == 200:
                     default_data = default_node_response.json()
                     default_node_id = default_data.get("node_id")
                     if default_node_id:
                         folder_payload["parent_id"] = default_node_id
-                        print(f"🎯 Using default node as parent: {default_node_id}")
-            
-            print(f"📤 Final folder payload: {folder_payload}")
-            
+                        logger.debug(f"Using default node as parent: {default_node_id}")
+
             # Create the folder
-            response = await client.post(url, json=folder_payload, headers=headers)
-            
-            print(f"📡 API Response status: {response.status_code}")
-            
+            response = await client.post(
+                url,
+                json=folder_payload,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
             if response.status_code in [200, 201]:
                 folder_data = response.json()
-                print(f"✅ Folder created successfully: {folder_data}")
-                
                 return {
                     "success": True,
                     "message": f"Folder '{title}' created successfully",
@@ -2095,89 +2085,73 @@ async def create_folder(title: str, description: str = "", parent_id: str = "", 
                     }
                 }
             else:
-                error_msg = f"Failed to create folder: HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
+                return create_error_response(
+                    f"Failed to create folder: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        error_msg = f"Failed to create folder: {str(e)}"
-        print(f"❌ {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg
-        }
+        logger.error(f"create_folder failed: {str(e)}")
+        return create_error_response(
+            f"create_folder failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def move_node(node_id: str, new_parent_id: str = "", new_sort_order: int = None, auth_token: str = "", current_node_id: str = "") -> dict:
     """Move a task or note to a different folder (or to root if no parent specified)"""
-    logger.info(f"🔄 move_node CALLED - node_id='{node_id}', new_parent_id='{new_parent_id}', new_sort_order={new_sort_order}, auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🔄 MCP DEBUG - move_node called:")
-        print(f"   Node ID: {node_id}")
-        print(f"   New Parent ID: {new_parent_id}")
-        print(f"   New Sort Order: {new_sort_order}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not node_id:
-            return get_error_response("node_id_required")
-        
-        if not auth_token:
-            return {"success": False, "error": "Authentication token is required"}
-        
-        # FastGTD API endpoint for moving nodes
-        url = f"{FASTGTD_API_URL}/nodes/move"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"move_node called - node_id='{node_id}', new_parent_id='{new_parent_id}'")
+
+    # Validate inputs
+    if not node_id or len(node_id.strip()) == 0:
+        return get_error_response("node_id_required")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint for moving nodes
+    url = f"{FASTGTD_API_URL}/nodes/move"
+
     # Create move payload
     move_payload = {
-        "node_id": node_id,
+        "node_id": node_id.strip(),
         "new_parent_id": new_parent_id if new_parent_id else None
     }
-    
+
     if new_sort_order is not None:
         move_payload["new_sort_order"] = new_sort_order
-    
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
-    print(f"📤 Move payload: {move_payload}")
-    
+
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=move_payload, headers=headers)
-            
-            print(f"📡 API Response status: {response.status_code}")
-            
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.post(
+                url,
+                json=move_payload,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
             if response.status_code in [200, 201]:
                 result_data = response.json() if response.content else {"message": "Node moved successfully"}
-                print(f"✅ Node moved successfully: {result_data}")
-                
                 parent_msg = f"to folder {new_parent_id}" if new_parent_id else "to root level"
-                
+
                 return {
                     "success": True,
                     "message": f"Node {node_id} moved {parent_msg} successfully",
@@ -2187,125 +2161,98 @@ async def move_node(node_id: str, new_parent_id: str = "", new_sort_order: int =
                     "api_response": result_data
                 }
             else:
-                error_msg = f"Failed to move node: HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
+                return create_error_response(
+                    f"Failed to move node: HTTP {response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": response.status_code, "response": response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        error_msg = f"Failed to move node: {str(e)}"
-        print(f"❌ {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg
-        }
+        logger.error(f"move_node failed: {str(e)}")
+        return create_error_response(
+            f"move_node failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def add_tag(node_id: str, tag_name: str, tag_description: str = "", tag_color: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Add a tag to a task, note, or folder (creates tag if it doesn't exist)"""
-    logger.info(f"🏷️ add_tag CALLED - node_id='{node_id}', tag_name='{tag_name}', tag_description='{tag_description}', tag_color='{tag_color}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🏷️ MCP DEBUG - add_tag called:")
-        print(f"   Node ID: {node_id}")
-        print(f"   Tag Name: {tag_name}")
-        print(f"   Tag Description: {tag_description}")
-        print(f"   Tag Color: {tag_color}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not node_id:
-            return get_error_response("node_id_required")
-        
-        if not tag_name:
-            return {"success": False, "error": "Tag name is required"}
-        
-        if not auth_token:
-            return {"success": False, "error": "Authentication token is required"}
-        
-        # FastGTD API endpoints
-        create_tag_url = f"{FASTGTD_API_URL}/tags"
-        attach_tag_url = f"{FASTGTD_API_URL}/nodes/{node_id}/tags"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"add_tag called - node_id='{node_id}', tag_name='{tag_name}'")
+
+    # Validate inputs
+    if not node_id or len(node_id.strip()) == 0:
+        return get_error_response("node_id_required")
+
+    if not tag_name or len(tag_name.strip()) == 0:
+        return create_error_response("Tag name is required", "Provide a tag name", "MISSING_TAG_NAME")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoints
+    create_tag_url = f"{FASTGTD_API_URL}/tags"
+    attach_tag_url = f"{FASTGTD_API_URL}/nodes/{node_id}/tags"
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             # Step 1: Create or get tag
-            create_body = {"name": tag_name}
+            create_body = {"name": tag_name.strip()}
             if tag_description:
                 create_body["description"] = tag_description
             if tag_color:
                 create_body["color"] = tag_color
 
-            print(f"📤 Creating/finding tag with body: {create_body}")
-
             tag_response = await client.post(
                 create_tag_url,
                 headers=headers,
-                json=create_body
+                json=create_body,
+                timeout=HTTP_TIMEOUT
             )
-            
-            print(f"📡 Tag creation response status: {tag_response.status_code}")
-            
+
             if tag_response.status_code not in [200, 201]:
-                error_msg = f"Failed to create tag: HTTP {tag_response.status_code}"
-                try:
-                    error_data = tag_response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {tag_response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
+                return create_error_response(
+                    f"Failed to create tag: HTTP {tag_response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": tag_response.status_code, "response": tag_response.text}
+                )
+
             tag_data = tag_response.json()
             tag_id = tag_data.get("id")
-            print(f"✅ Tag ready: {tag_data}")
-            
+
             if not tag_id:
-                return {
-                    "success": False,
-                    "error": "Failed to get tag ID from response"
-                }
-            
+                return create_error_response(
+                    "Failed to get tag ID from response",
+                    "The tag may not have been created properly",
+                    "MISSING_TAG_ID"
+                )
+
             # Step 2: Attach tag to node
             attach_url = f"{attach_tag_url}/{tag_id}"
-            print(f"📤 Attaching tag to node: {attach_url}")
-            
-            attach_response = await client.post(attach_url, headers=headers)
-            
-            print(f"📡 Tag attachment response status: {attach_response.status_code}")
-            
+            attach_response = await client.post(
+                attach_url,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
             if attach_response.status_code in [200, 201]:
-                print(f"✅ Tag '{tag_name}' attached to node successfully")
-                
                 return {
                     "success": True,
                     "message": f"Tag '{tag_name}' added to node successfully",
@@ -2319,94 +2266,73 @@ async def add_tag(node_id: str, tag_name: str, tag_description: str = "", tag_co
                     }
                 }
             else:
-                error_msg = f"Failed to attach tag to node: HTTP {attach_response.status_code}"
-                try:
-                    error_data = attach_response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {attach_response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
+                return create_error_response(
+                    f"Failed to attach tag to node: HTTP {attach_response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": attach_response.status_code, "response": attach_response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        error_msg = f"Failed to add tag: {str(e)}"
-        print(f"❌ {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg
-        }
+        logger.error(f"add_tag failed: {str(e)}")
+        return create_error_response(
+            f"add_tag failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def remove_tag(node_id: str, tag_name: str, auth_token: str = "", current_node_id: str = "") -> dict:
     """Remove a tag from a task, note, or folder"""
-    logger.info(f"🏷️❌ remove_tag CALLED - node_id='{node_id}', tag_name='{tag_name}', auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        print(f"🏷️❌ MCP DEBUG - remove_tag called:")
-        print(f"   Node ID: {node_id}")
-        print(f"   Tag Name: {tag_name}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not node_id:
-            return get_error_response("node_id_required")
-        
-        if not tag_name:
-            return {"success": False, "error": "Tag name is required"}
-        
-        if not auth_token:
-            return {"success": False, "error": "Authentication token is required"}
-        
-        # FastGTD API endpoints
-        get_tags_url = f"{FASTGTD_API_URL}/nodes/{node_id}/tags"
-        detach_tag_url = f"{FASTGTD_API_URL}/nodes/{node_id}/tags"
-    
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"remove_tag called - node_id='{node_id}', tag_name='{tag_name}'")
+
+    # Validate inputs
+    if not node_id or len(node_id.strip()) == 0:
+        return get_error_response("node_id_required")
+
+    if not tag_name or len(tag_name.strip()) == 0:
+        return create_error_response("Tag name is required", "Provide a tag name", "MISSING_TAG_NAME")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoints
+    get_tags_url = f"{FASTGTD_API_URL}/nodes/{node_id}/tags"
+    detach_tag_url = f"{FASTGTD_API_URL}/nodes/{node_id}/tags"
+
     # Prepare headers
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {auth_token}"
     }
-    
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             # Step 1: Get all tags for the node to find the tag ID
-            print(f"📤 Getting tags for node: {get_tags_url}")
-            
-            tags_response = await client.get(get_tags_url, headers=headers)
-            
-            print(f"📡 Get tags response status: {tags_response.status_code}")
-            
-            if tags_response.status_code not in [200]:
-                error_msg = f"Failed to get node tags: HTTP {tags_response.status_code}"
-                try:
-                    error_data = tags_response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {tags_response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
+            tags_response = await client.get(
+                get_tags_url,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
+            if tags_response.status_code != 200:
+                return create_error_response(
+                    f"Failed to get node tags: HTTP {tags_response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": tags_response.status_code, "response": tags_response.text}
+                )
+
             tags_data = tags_response.json()
-            print(f"✅ Node tags: {tags_data}")
 
             # Handle case where response might be None or not a list
             if tags_data is None:
@@ -2424,25 +2350,24 @@ async def remove_tag(node_id: str, tag_name: str, auth_token: str = "", current_
                 if tag.get("name", "").lower().strip() == tag_name_lower:
                     tag_id = tag.get("id")
                     break
-            
+
             if not tag_id:
-                return {
-                    "success": False,
-                    "error": f"Tag '{tag_name}' not found on this node",
-                    "available_tags": [tag.get("name") for tag in tags_data if tag.get("name")]
-                }
-            
+                return create_error_response(
+                    f"Tag '{tag_name}' not found on this node",
+                    f"Available tags: {', '.join([tag.get('name') for tag in tags_data if tag.get('name')])}",
+                    "TAG_NOT_FOUND",
+                    {"available_tags": [tag.get("name") for tag in tags_data if tag.get("name")]}
+                )
+
             # Step 2: Remove tag from node
             detach_url = f"{detach_tag_url}/{tag_id}"
-            print(f"📤 Removing tag from node: {detach_url}")
-            
-            detach_response = await client.delete(detach_url, headers=headers)
-            
-            print(f"📡 Tag removal response status: {detach_response.status_code}")
-            
-            if detach_response.status_code in [204]:
-                print(f"✅ Tag '{tag_name}' removed from node successfully")
-                
+            detach_response = await client.delete(
+                detach_url,
+                headers=headers,
+                timeout=HTTP_TIMEOUT
+            )
+
+            if detach_response.status_code in [204, 200]:
                 return {
                     "success": True,
                     "message": f"Tag '{tag_name}' removed from node successfully",
@@ -2451,72 +2376,69 @@ async def remove_tag(node_id: str, tag_name: str, auth_token: str = "", current_
                     "tag_id": tag_id
                 }
             else:
-                error_msg = f"Failed to remove tag from node: HTTP {detach_response.status_code}"
-                try:
-                    error_data = detach_response.json()
-                    error_msg += f" - {error_data}"
-                except:
-                    error_msg += f" - {detach_response.text}"
-                
-                print(f"❌ {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
+                return create_error_response(
+                    f"Failed to remove tag from node: HTTP {detach_response.status_code}",
+                    "Check your authentication and parameters",
+                    "API_ERROR",
+                    {"http_status": detach_response.status_code, "response": detach_response.text}
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        error_msg = f"Failed to remove tag: {str(e)}"
-        print(f"❌ {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg
-        }
+        logger.error(f"remove_tag failed: {str(e)}")
+        return create_error_response(
+            f"remove_tag failed: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 
 async def get_today_tasks(auth_token: str = "", current_node_id: str = "") -> dict:
     """Get all tasks that are due today."""
+    logger.info("get_today_tasks called")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # Get today's date in ISO format (start and end of day)
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date()
+    today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=timezone.utc).isoformat()
+    today_end = datetime.combine(today, datetime.max.time()).replace(tzinfo=timezone.utc).isoformat()
+
+    # FastGTD API endpoint for getting nodes
+    url = f"{FASTGTD_API_URL}/nodes/"
+
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Query parameters - get all tasks and filter by due date on client side
+    params = {
+        "node_type": "task",
+        "limit": 1000  # High limit to ensure we get all tasks
+    }
+
     try:
-        print("🔍 MCP TOOL: get_today_tasks")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        # Get today's date in ISO format (start and end of day)
-        from datetime import datetime, timezone
-        today = datetime.now(timezone.utc).date()
-        today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=timezone.utc).isoformat()
-        today_end = datetime.combine(today, datetime.max.time()).replace(tzinfo=timezone.utc).isoformat()
-        
-        print(f"   Looking for tasks due between: {today_start} and {today_end}")
-        
-        # FastGTD API endpoint for getting nodes
-        url = f"{FASTGTD_API_URL}/nodes/"
-        
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
-        # Query parameters - get all tasks and filter by due date on client side
-        params = {
-            "node_type": "task",
-            "limit": 1000  # High limit to ensure we get all tasks
-        }
-        
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
-                params=params
+                params=params,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code == 200:
                 all_tasks = response.json()
 
@@ -2561,7 +2483,7 @@ async def get_today_tasks(auth_token: str = "", current_node_id: str = "") -> di
             elif response.status_code == 500:
                 # API returns 500 when there are issues with task retrieval
                 # Return empty list to be resilient
-                print(f"⚠️ API returned HTTP 500, returning empty task list")
+                logger.warning("API returned HTTP 500, returning empty task list")
                 return {
                     "success": True,
                     "message": "API error encountered, returning empty task list (API may have data issues)",
@@ -2570,64 +2492,75 @@ async def get_today_tasks(auth_token: str = "", current_node_id: str = "") -> di
                     "warning": "API returned HTTP 500"
                 }
             else:
-                error_msg = f"API request failed: HTTP {response.status_code}"
                 if response.status_code == 401:
-                    error_msg = "Authentication failed - invalid token"
+                    return get_error_response("no_auth")
                 elif response.status_code == 404:
-                    error_msg = "Tasks endpoint not found"
-                    
-                return {"success": False, "error": error_msg}
-                
+                    return create_error_response(
+                        "Tasks endpoint not found",
+                        "Verify your FASTGTD_API_URL is correct",
+                        "NOT_FOUND"
+                    )
+                else:
+                    return create_error_response(
+                        f"API request failed: HTTP {response.status_code}",
+                        "Check your network connection and API configuration",
+                        "API_ERROR"
+                    )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        print(f"❌ MCP ERROR in get_today_tasks: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to get today's tasks: {str(e)}"
-        }
+        logger.error(f"get_today_tasks failed: {str(e)}")
+        return create_error_response(
+            f"Failed to get today's tasks: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 
 async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> dict:
     """Get all tasks that are overdue (due date in the past)."""
+    logger.info("get_overdue_tasks called")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # Get current datetime
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+
+    # FastGTD API endpoint for getting nodes
+    url = f"{FASTGTD_API_URL}/nodes/"
+
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Query parameters - get all tasks and filter by due date on client side
+    params = {
+        "node_type": "task",
+        "limit": 1000  # High limit to ensure we get all tasks
+    }
+
     try:
-        print("🔍 MCP TOOL: get_overdue_tasks")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        # Get current datetime
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-        
-        print(f"   Looking for tasks due before: {now.isoformat()}")
-        
-        # FastGTD API endpoint for getting nodes
-        url = f"{FASTGTD_API_URL}/nodes/"
-        
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
-        # Query parameters - get all tasks and filter by due date on client side
-        params = {
-            "node_type": "task",
-            "limit": 1000  # High limit to ensure we get all tasks
-        }
-        
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
-                params=params
+                params=params,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code == 200:
                 all_tasks = response.json()
 
@@ -2646,7 +2579,7 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
                     task_data = task.get('task_data', {})
                     due_at = task_data.get('due_at')
                     status = task_data.get('status', 'todo')
-                    
+
                     # Only include tasks that are not completed and have a due date
                     if due_at and status not in ['done', 'completed']:
                         try:
@@ -2664,7 +2597,7 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
                         except ValueError:
                             # Skip tasks with invalid date format
                             continue
-                
+
                 # Sort by most overdue first
                 overdue_tasks.sort(key=lambda x: x['days_overdue'], reverse=True)
 
@@ -2677,7 +2610,7 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
             elif response.status_code == 500:
                 # API returns 500 when there are issues with task retrieval
                 # Return empty list to be resilient
-                print(f"⚠️ API returned HTTP 500, returning empty task list")
+                logger.warning("API returned HTTP 500, returning empty task list")
                 return {
                     "success": True,
                     "message": "API error encountered, returning empty task list (API may have data issues)",
@@ -2686,80 +2619,92 @@ async def get_overdue_tasks(auth_token: str = "", current_node_id: str = "") -> 
                     "warning": "API returned HTTP 500"
                 }
             else:
-                error_msg = f"API request failed: HTTP {response.status_code}"
                 if response.status_code == 401:
-                    error_msg = "Authentication failed - invalid token"
+                    return get_error_response("no_auth")
                 elif response.status_code == 404:
-                    error_msg = "Tasks endpoint not found"
+                    return create_error_response(
+                        "Tasks endpoint not found",
+                        "Verify your FASTGTD_API_URL is correct",
+                        "NOT_FOUND"
+                    )
+                else:
+                    return create_error_response(
+                        f"API request failed: HTTP {response.status_code}",
+                        "Check your network connection and API configuration",
+                        "API_ERROR"
+                    )
 
-                return {"success": False, "error": error_msg}
-                
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        print(f"❌ MCP ERROR in get_overdue_tasks: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to get overdue tasks: {str(e)}"
-        }
+        logger.error(f"get_overdue_tasks failed: {str(e)}")
+        return create_error_response(
+            f"Failed to get overdue tasks: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 
 async def update_note(note_id: str, title: str = "", content: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Update an existing note's title and/or content."""
-    try:
-        print("✏️ MCP TOOL: update_note")
-        print(f"   Note ID: {note_id}")
-        print(f"   Title: {title}")
-        print(f"   Content length: {len(content) if content else 0} characters")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        if not note_id:
-            return {"success": False, "error": "Note ID is required"}
-            
-        # Must provide either title or content to update
-        if not title and not content:
-            return {"success": False, "error": "Must provide either title or content to update"}
-        
-        # FastGTD API endpoint for updating nodes
-        url = f"{FASTGTD_API_URL}/nodes/{note_id}"
-        
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {auth_token}"
+    logger.info(f"update_note called - note_id={note_id}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    if not note_id:
+        return get_error_response("node_id_required")
+
+    # Must provide either title or content to update
+    if not title and not content:
+        return create_error_response(
+            "Must provide either title or content to update",
+            "Provide at least one field to update: title or content",
+            "MISSING_UPDATE_FIELDS"
+        )
+
+    # FastGTD API endpoint for updating nodes
+    url = f"{FASTGTD_API_URL}/nodes/{note_id}"
+
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Build update payload
+    update_data = {}
+
+    # Add title if provided
+    if title:
+        update_data["title"] = title
+
+    # Add note content if provided
+    if content:
+        update_data["note_data"] = {
+            "body": content
         }
-        
-        # Build update payload
-        update_data = {}
-        
-        # Add title if provided
-        if title:
-            update_data["title"] = title
-        
-        # Add note content if provided
-        if content:
-            update_data["note_data"] = {
-                "body": content
-            }
-        
-        print(f"   Update payload: {update_data}")
-        
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        async with httpx.AsyncClient() as client:
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.put(
                 url,
                 headers=headers,
-                json=update_data
+                json=update_data,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code == 200:
                 updated_note = response.json()
-                
+
                 return {
                     "success": True,
                     "message": f"Note '{updated_note.get('title', 'Unknown')}' updated successfully",
@@ -2771,83 +2716,106 @@ async def update_note(note_id: str, title: str = "", content: str = "", auth_tok
                     }
                 }
             else:
-                error_msg = f"API request failed: HTTP {response.status_code}"
                 if response.status_code == 401:
-                    error_msg = "Authentication failed - invalid token"
+                    return get_error_response("no_auth")
                 elif response.status_code == 404:
-                    error_msg = "Note not found - it may have been deleted"
+                    return create_error_response(
+                        "Note not found",
+                        "The note may have been deleted. Use search_nodes() to find available notes",
+                        "NOT_FOUND"
+                    )
                 elif response.status_code == 400:
                     try:
                         error_detail = response.json()
-                        error_msg = f"Bad request: {error_detail.get('detail', 'Unknown error')}"
+                        return create_error_response(
+                            f"Bad request: {error_detail.get('detail', 'Unknown error')}",
+                            "Check that the note data is valid",
+                            "BAD_REQUEST"
+                        )
                     except:
-                        error_msg = "Bad request - invalid note data"
-                    
-                return {"success": False, "error": error_msg}
-                
+                        return create_error_response(
+                            "Bad request - invalid note data",
+                            "Check that the note data is valid",
+                            "BAD_REQUEST"
+                        )
+                else:
+                    return create_error_response(
+                        f"API request failed: HTTP {response.status_code}",
+                        "Check your network connection and API configuration",
+                        "API_ERROR"
+                    )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        print(f"❌ MCP ERROR in update_note: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to update note: {str(e)}"
-        }
+        logger.error(f"update_note failed: {str(e)}")
+        return create_error_response(
+            f"Failed to update note: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 
 async def get_smart_folder_contents(smart_folder_id: str, limit: int = 100, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Get the contents of a smart folder by evaluating its rules."""
+    logger.info(f"get_smart_folder_contents called - smart_folder_id={smart_folder_id}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    if not smart_folder_id:
+        return get_error_response("node_id_required")
+
+    # FastGTD API endpoint for getting smart folder contents
+    url = f"{FASTGTD_API_URL}/nodes/{smart_folder_id}/contents"
+
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Query parameters for pagination
+    params = {
+        "limit": min(limit, 500),  # Cap at 500 for performance
+        "offset": max(offset, 0)   # Ensure non-negative offset
+    }
+
     try:
-        print("🤖 MCP TOOL: get_smart_folder_contents")
-        print(f"   Smart folder ID: {smart_folder_id}")
-        print(f"   Limit: {limit}")
-        print(f"   Offset: {offset}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        if not smart_folder_id:
-            return {"success": False, "error": "Smart folder ID is required"}
-        
-        # FastGTD API endpoint for getting smart folder contents
-        url = f"{FASTGTD_API_URL}/nodes/{smart_folder_id}/contents"
-        
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
-        # Query parameters for pagination
-        params = {
-            "limit": min(limit, 500),  # Cap at 500 for performance
-            "offset": max(offset, 0)   # Ensure non-negative offset
-        }
-        
-        import httpx
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
-                params=params
+                params=params,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code == 200:
                 contents = response.json()
-                print(f"🔍 API Response: {contents}")
-                
+
                 # Check if contents is None or not a list
                 if contents is None:
-                    print("❌ API returned None")
-                    return {"success": False, "error": "API returned None response"}
-                
+                    return create_error_response(
+                        "API returned None response",
+                        "Check that the smart folder exists and has valid rules",
+                        "INVALID_RESPONSE"
+                    )
+
                 if not isinstance(contents, list):
-                    print(f"❌ API returned non-list: {type(contents)}")
-                    return {"success": False, "error": f"API returned unexpected type: {type(contents)}"}
-                
+                    return create_error_response(
+                        f"API returned unexpected type: {type(contents)}",
+                        "Check that the smart folder exists and has valid rules",
+                        "INVALID_RESPONSE"
+                    )
+
                 # Extract relevant information from each matching node
                 processed_contents = []
                 for node in contents:
@@ -2861,7 +2829,7 @@ async def get_smart_folder_contents(smart_folder_id: str, limit: int = 100, offs
                             'parent_id': node.get('parent_id'),
                             'tags': [tag.get('name', '') for tag in (node.get('tags') or [])]
                         }
-                        
+
                         # Add type-specific data
                         if node.get('node_type') == 'task':
                             task_data = node.get('task_data') or {}
@@ -2884,12 +2852,12 @@ async def get_smart_folder_contents(smart_folder_id: str, limit: int = 100, offs
                             node_info.update({
                                 'content_preview': body[:100] + ('...' if len(body) > 100 else '')
                             })
-                    
+
                         processed_contents.append(node_info)
                     except Exception as e:
-                        print(f"❌ Error processing node {node.get('id', 'unknown')}: {str(e)}")
+                        logger.warning(f"Error processing node {node.get('id', 'unknown')}: {str(e)}")
                         continue  # Skip this node and continue with others
-                
+
                 return {
                     "success": True,
                     "message": f"Found {len(processed_contents)} item(s) matching smart folder rules",
@@ -2903,79 +2871,103 @@ async def get_smart_folder_contents(smart_folder_id: str, limit: int = 100, offs
                     }
                 }
             else:
-                error_msg = f"API request failed: HTTP {response.status_code}"
                 if response.status_code == 401:
-                    error_msg = "Authentication failed - invalid token"
+                    return get_error_response("no_auth")
                 elif response.status_code == 404:
-                    error_msg = "Smart folder not found"
+                    return create_error_response(
+                        "Smart folder not found",
+                        "The smart folder may have been deleted. Use search_nodes() to find available smart folders",
+                        "NOT_FOUND"
+                    )
                 elif response.status_code == 400:
                     try:
                         error_detail = response.json()
-                        error_msg = f"Bad request: {error_detail.get('detail', 'Invalid smart folder request')}"
+                        return create_error_response(
+                            f"Bad request: {error_detail.get('detail', 'Invalid smart folder request')}",
+                            "Check that the smart folder ID is valid",
+                            "BAD_REQUEST"
+                        )
                     except:
-                        error_msg = "Bad request - invalid smart folder ID"
-                    
-                return {"success": False, "error": error_msg}
-                
+                        return create_error_response(
+                            "Bad request - invalid smart folder ID",
+                            "Check that the smart folder ID is valid",
+                            "BAD_REQUEST"
+                        )
+                else:
+                    return create_error_response(
+                        f"API request failed: HTTP {response.status_code}",
+                        "Check your network connection and API configuration",
+                        "API_ERROR"
+                    )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        print(f"❌ MCP ERROR in get_smart_folder_contents: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to get smart folder contents: {str(e)}"
-        }
+        logger.error(f"get_smart_folder_contents failed: {str(e)}")
+        return create_error_response(
+            f"Failed to get smart folder contents: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 
 async def instantiate_template(template_id: str, name: str, parent_id: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Create a new instance from a template with all its contents."""
+    logger.info(f"instantiate_template called - template_id={template_id}, name={name}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    if not template_id:
+        return create_error_response(
+            "Template ID is required",
+            "Provide a template ID to instantiate. Use list_templates() or search_templates() to find templates",
+            "MISSING_TEMPLATE_ID"
+        )
+
+    if not name:
+        return create_error_response(
+            "Instance name is required",
+            "Provide a name for the new template instance",
+            "MISSING_NAME"
+        )
+
+    # FastGTD API endpoint for instantiating templates
+    url = f"{FASTGTD_API_URL}/nodes/templates/{template_id}/instantiate"
+
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Build query parameters
+    params = {"name": name}
+
+    # Add parent_id if provided
+    if parent_id:
+        params["parent_id"] = parent_id
+
     try:
-        print("📋 MCP TOOL: instantiate_template")
-        print(f"   Template ID: {template_id}")
-        print(f"   Instance name: {name}")
-        print(f"   Parent ID: {parent_id}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        if not template_id:
-            return {"success": False, "error": "Template ID is required"}
-            
-        if not name:
-            return {"success": False, "error": "Instance name is required"}
-        
-        # FastGTD API endpoint for instantiating templates
-        url = f"{FASTGTD_API_URL}/nodes/templates/{template_id}/instantiate"
-        
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
-        # Build query parameters
-        params = {"name": name}
-        
-        # Add parent_id if provided
-        if parent_id:
-            params["parent_id"] = parent_id
-        
-        print(f"   Query parameters: {params}")
-        
-        import httpx
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.post(
                 url,
                 headers=headers,
-                params=params
+                params=params,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code == 200:
                 created_instance = response.json()
-                
+
                 return {
                     "success": True,
                     "message": f"Template instantiated successfully as '{created_instance.get('title', 'Unknown')}'",
@@ -2991,76 +2983,92 @@ async def instantiate_template(template_id: str, name: str, parent_id: str = "",
                     "template_id": template_id
                 }
             else:
-                error_msg = f"API request failed: HTTP {response.status_code}"
                 if response.status_code == 401:
-                    error_msg = "Authentication failed - invalid token"
+                    return get_error_response("no_auth")
                 elif response.status_code == 404:
-                    error_msg = "Template not found - it may have been deleted"
+                    return create_error_response(
+                        "Template not found",
+                        "The template may have been deleted. Use list_templates() to find available templates",
+                        "NOT_FOUND"
+                    )
                 elif response.status_code == 400:
                     try:
                         error_detail = response.json()
-                        error_msg = f"Bad request: {error_detail.get('detail', 'Unknown error')}"
+                        return create_error_response(
+                            f"Bad request: {error_detail.get('detail', 'Unknown error')}",
+                            "Check that the template ID and parameters are valid",
+                            "BAD_REQUEST"
+                        )
                     except:
-                        error_msg = "Bad request - invalid template or parameters"
-                    
-                return {"success": False, "error": error_msg}
-                
+                        return create_error_response(
+                            "Bad request - invalid template or parameters",
+                            "Check that the template ID and parameters are valid",
+                            "BAD_REQUEST"
+                        )
+                else:
+                    return create_error_response(
+                        f"API request failed: HTTP {response.status_code}",
+                        "Check your network connection and API configuration",
+                        "API_ERROR"
+                    )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        print(f"❌ MCP ERROR in instantiate_template: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to instantiate template: {str(e)}"
-        }
+        logger.error(f"instantiate_template failed: {str(e)}")
+        return create_error_response(
+            f"Failed to instantiate template: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 
 async def list_templates(category: str = "", limit: int = 50, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """List all available templates with optional category filter."""
+    logger.info(f"list_templates called - category={category}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    # FastGTD API endpoint for listing templates
+    url = f"{FASTGTD_API_URL}/nodes/templates"
+
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Query parameters
+    params = {
+        "limit": min(limit, 100),  # Cap at 100 for performance
+        "offset": max(offset, 0)   # Ensure non-negative offset
+    }
+
+    # Add category filter if provided
+    if category:
+        params["category"] = category
+
     try:
-        print("📋 MCP TOOL: list_templates")
-        print(f"   Category filter: {category}")
-        print(f"   Limit: {limit}")
-        print(f"   Offset: {offset}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        # FastGTD API endpoint for listing templates
-        url = f"{FASTGTD_API_URL}/nodes/templates"
-        
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
-        # Query parameters
-        params = {
-            "limit": min(limit, 100),  # Cap at 100 for performance
-            "offset": max(offset, 0)   # Ensure non-negative offset
-        }
-        
-        # Add category filter if provided
-        if category:
-            params["category"] = category
-        
-        print(f"   Query parameters: {params}")
-        
-        import httpx
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
-                params=params
+                params=params,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code == 200:
                 templates = response.json()
-                
+
                 # Process templates for cleaner output
                 processed_templates = []
                 for template in templates:
@@ -3076,7 +3084,7 @@ async def list_templates(category: str = "", limit: int = 50, offset: int = 0, a
                         'create_container': template_data.get('create_container', True),
                         'target_node_id': template_data.get('target_node_id')
                     })
-                
+
                 return {
                     "success": True,
                     "message": f"Found {len(processed_templates)} template(s)",
@@ -3090,85 +3098,97 @@ async def list_templates(category: str = "", limit: int = 50, offset: int = 0, a
                     "category_filter": category if category else "all categories"
                 }
             else:
-                error_msg = f"API request failed: HTTP {response.status_code}"
                 if response.status_code == 401:
-                    error_msg = "Authentication failed - invalid token"
+                    return get_error_response("no_auth")
                 elif response.status_code == 400:
                     try:
                         error_detail = response.json()
-                        error_msg = f"Bad request: {error_detail.get('detail', 'Invalid request')}"
+                        return create_error_response(
+                            f"Bad request: {error_detail.get('detail', 'Invalid request')}",
+                            "Check that the parameters are valid",
+                            "BAD_REQUEST"
+                        )
                     except:
-                        error_msg = "Bad request - invalid parameters"
-                    
-                return {"success": False, "error": error_msg}
-                
+                        return create_error_response(
+                            "Bad request - invalid parameters",
+                            "Check that the parameters are valid",
+                            "BAD_REQUEST"
+                        )
+                else:
+                    return create_error_response(
+                        f"API request failed: HTTP {response.status_code}",
+                        "Check your network connection and API configuration",
+                        "API_ERROR"
+                    )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        print(f"❌ MCP ERROR in list_templates: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to list templates: {str(e)}"
-        }
+        logger.error(f"list_templates failed: {str(e)}")
+        return create_error_response(
+            f"Failed to list templates: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 
 async def search_templates(query: str, category: str = "", limit: int = 50, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """Search for templates by name or description."""
+    logger.info(f"search_templates called - query={query}, category={category}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    if not query or len(query.strip()) < 1:
+        return get_error_response("search_query_required")
+
+    # FastGTD API endpoint for searching nodes (templates)
+    url = f"{FASTGTD_API_URL}/nodes/"
+
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Query parameters for search
+    params = {
+        "search": query.strip(),
+        "node_type": "template",
+        "limit": min(limit, MAX_PAGE_SIZE),  # Cap at MAX_PAGE_SIZE for performance
+        "offset": max(offset, 0)  # Ensure non-negative offset
+    }
+
     try:
-        print("🔍 MCP TOOL: search_templates")
-        print(f"   Search query: {query}")
-        print(f"   Category filter: {category}")
-        print(f"   Limit: {limit}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        if not auth_token:
-            return get_error_response("no_auth")
-        
-        if not query or len(query.strip()) < 1:
-            return get_error_response("search_query_required")
-        
-        # FastGTD API endpoint for searching nodes (templates)
-        url = f"{FASTGTD_API_URL}/nodes/"
-        
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
-        # Query parameters for search
-        params = {
-            "search": query.strip(),
-            "node_type": "template",
-            "limit": min(limit, MAX_PAGE_SIZE),  # Cap at MAX_PAGE_SIZE for performance
-            "offset": max(offset, 0)  # Ensure non-negative offset
-        }
-        
-        print(f"   Query parameters: {params}")
-        
-        import httpx
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers=headers,
-                params=params
+                params=params,
+                timeout=HTTP_TIMEOUT
             )
-            
+
             if response.status_code == 200:
                 all_templates = response.json()
-                
+
                 # Filter by category if specified
                 filtered_templates = []
                 for template in all_templates:
                     template_data = template.get('template_data', {})
                     template_category = template_data.get('category', '')
-                    
+
                     # Apply category filter
                     if category and template_category.lower() != category.lower():
                         continue
-                    
+
                     filtered_templates.append({
                         'id': template['id'],
                         'title': template['title'],
@@ -3180,7 +3200,7 @@ async def search_templates(query: str, category: str = "", limit: int = 50, offs
                         'create_container': template_data.get('create_container', True),
                         'target_node_id': template_data.get('target_node_id')
                     })
-                
+
                 return {
                     "success": True,
                     "message": f"Found {len(filtered_templates)} template(s) matching '{query}'",
@@ -3190,166 +3210,207 @@ async def search_templates(query: str, category: str = "", limit: int = 50, offs
                     "total_found": len(filtered_templates)
                 }
             else:
-                error_msg = f"API request failed: HTTP {response.status_code}"
                 if response.status_code == 401:
-                    error_msg = "Authentication failed - invalid token"
+                    return get_error_response("no_auth")
                 elif response.status_code == 400:
                     try:
                         error_detail = response.json()
-                        error_msg = f"Bad request: {error_detail.get('detail', 'Invalid search query')}"
+                        return create_error_response(
+                            f"Bad request: {error_detail.get('detail', 'Invalid search query')}",
+                            "Check that the search parameters are valid",
+                            "BAD_REQUEST"
+                        )
                     except:
-                        error_msg = "Bad request - invalid search parameters"
-                    
-                return {"success": False, "error": error_msg}
-                
+                        return create_error_response(
+                            "Bad request - invalid search parameters",
+                            "Check that the search parameters are valid",
+                            "BAD_REQUEST"
+                        )
+                else:
+                    return create_error_response(
+                        f"API request failed: HTTP {response.status_code}",
+                        "Check your network connection and API configuration",
+                        "API_ERROR"
+                    )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        print(f"❌ MCP ERROR in search_templates: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to search templates: {str(e)}"
-        }
+        logger.error(f"search_templates failed: {str(e)}")
+        return create_error_response(
+            f"Failed to search templates: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def upload_artifact(node_id: str, file_path: str, filename: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Upload a file and attach it to a node."""
+    logger.info(f"upload_artifact called - node_id={node_id}, file_path={file_path}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    if not node_id:
+        return get_error_response("node_id_required")
+
+    if not file_path:
+        return create_error_response(
+            "file_path is required",
+            "Provide the path to the file you want to upload",
+            "MISSING_FILE_PATH"
+        )
+
+    # Check if file exists
+    from pathlib import Path
     try:
-        logger.info(f"📤 upload_artifact CALLED - node_id={node_id}, file_path={file_path}, filename={filename}")
-        
-        print("📤 MCP TOOL: upload_artifact")
-        print(f"   Node ID: {node_id}")
-        print(f"   File path: {file_path}")
-        print(f"   Custom filename: {filename}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        if not auth_token:
-            return {"success": False, "error": "No authentication token available"}
-        
-        if not node_id:
-            return {"success": False, "error": "node_id is required"}
-        
-        if not file_path:
-            return {"success": False, "error": "file_path is required"}
-        
-        # Check if file exists
-        import os
-        from pathlib import Path
         file_pathobj = Path(file_path)
         if not file_pathobj.exists():
-            return {"success": False, "error": f"File not found: {file_path}"}
-        
-        # Use custom filename or default to file basename
-        upload_filename = filename if filename else file_pathobj.name
-        
-        # FastGTD API endpoint for uploading artifacts
-        url = f"{FASTGTD_API_URL}/artifacts"
-        
-        # Prepare headers
-        headers = {
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
+            return create_error_response(
+                f"File not found: {file_path}",
+                "Check that the file path is correct and the file exists",
+                "FILE_NOT_FOUND"
+            )
+    except Exception as e:
+        return create_error_response(
+            f"Invalid file path: {str(e)}",
+            "Provide a valid file path",
+            "INVALID_PATH"
+        )
+
+    # Use custom filename or default to file basename
+    upload_filename = filename if filename else file_pathobj.name
+
+    # FastGTD API endpoint for uploading artifacts
+    url = f"{FASTGTD_API_URL}/artifacts"
+
+    # Prepare headers
+    headers = {
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    try:
         # Prepare multipart form data
-        import httpx
         with open(file_path, "rb") as f:
             files = {"file": (upload_filename, f, None)}
             data = {"node_id": node_id}
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
+
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
                 response = await client.post(
                     url,
                     headers=headers,
                     files=files,
-                    data=data
+                    data=data,
+                    timeout=HTTP_TIMEOUT
                 )
-        
+
         if response.status_code == 201:
             artifact_data = response.json()
-            logger.info(f"✅ Successfully uploaded artifact {artifact_data['id']} to node {node_id}")
+            logger.info(f"Successfully uploaded artifact {artifact_data['id']} to node {node_id}")
             return {
                 "success": True,
                 "message": f"Successfully uploaded '{upload_filename}' to node {node_id}",
                 "artifact": artifact_data
             }
         else:
-            error_msg = f"Upload failed: HTTP {response.status_code}"
             if response.status_code == 401:
-                error_msg = "Authentication failed - invalid token"
+                return get_error_response("no_auth")
             elif response.status_code == 404:
-                error_msg = f"Node {node_id} not found or access denied"
+                return create_error_response(
+                    f"Node {node_id} not found",
+                    "The node may have been deleted or you don't have access. Use search_nodes() to find available nodes",
+                    "NOT_FOUND"
+                )
             elif response.status_code == 400:
                 try:
                     error_detail = response.json()
-                    error_msg = f"Bad request: {error_detail.get('detail', 'Invalid upload parameters')}"
+                    return create_error_response(
+                        f"Bad request: {error_detail.get('detail', 'Invalid upload parameters')}",
+                        "Check that the node ID and file are valid",
+                        "BAD_REQUEST"
+                    )
                 except:
-                    error_msg = "Bad request - invalid upload parameters"
-            
-            logger.error(f"❌ Upload failed: {error_msg}")
-            return {"success": False, "error": error_msg}
-            
+                    return create_error_response(
+                        "Bad request - invalid upload parameters",
+                        "Check that the node ID and file are valid",
+                        "BAD_REQUEST"
+                    )
+            else:
+                return create_error_response(
+                    f"Upload failed: HTTP {response.status_code}",
+                    "Check your network connection and API configuration",
+                    "API_ERROR"
+                )
+
+    except IOError as e:
+        return create_error_response(
+            f"File read error: {str(e)}",
+            "Check that the file is readable and not locked by another process",
+            "FILE_READ_ERROR"
+        )
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        logger.error(f"❌ upload_artifact error: {str(e)}")
-        print(f"❌ MCP ERROR in upload_artifact: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to upload artifact: {str(e)}"
-        }
+        logger.error(f"upload_artifact failed: {str(e)}")
+        return create_error_response(
+            f"Failed to upload artifact: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def download_artifact(artifact_id: str, download_path: str = "", auth_token: str = "", current_node_id: str = "") -> dict:
     """Download an artifact file by ID."""
-    logger.info(f"📥 download_artifact CALLED - artifact_id={artifact_id}, download_path={download_path}, auth_token_present={bool(auth_token)}")
-    
-    try:
-        import httpx
-        import os
-        from pathlib import Path
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        if not auth_token:
-            return {"success": False, "error": "No authentication token available"}
-        
-        print("📥 MCP TOOL: download_artifact")
-        print(f"   Artifact ID: {artifact_id}")
-        print(f"   Download path: {download_path}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # FastGTD API endpoint for downloading artifacts
-        url = f"{FASTGTD_API_URL}/artifacts/{artifact_id}/download"
-        
-    except Exception as e:
-        print(f"❌ MCP ERROR in setup: {str(e)}")
-        return {
-            "success": False,
-            "error": f"MCP tool setup failed: {str(e)}"
-        }
-    
+    logger.info(f"download_artifact called - artifact_id={artifact_id}, download_path={download_path}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
     if not artifact_id:
-        return {"success": False, "error": "artifact_id is required"}
-    
+        return create_error_response(
+            "artifact_id is required",
+            "Provide the ID of the artifact you want to download",
+            "MISSING_ARTIFACT_ID"
+        )
+
+    # FastGTD API endpoint for downloading artifacts
+    url = f"{FASTGTD_API_URL}/artifacts/{artifact_id}/download"
+
     # Prepare headers
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, headers=headers)
-        
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.get(url, headers=headers, timeout=HTTP_TIMEOUT)
+
         if response.status_code == 200:
             # Get filename from Content-Disposition header or use artifact_id as fallback
+            import re
+            from pathlib import Path
             filename = artifact_id
             if 'content-disposition' in response.headers:
-                import re
                 disposition = response.headers['content-disposition']
                 filename_match = re.search(r'filename="?([^"]+)"?', disposition)
                 if filename_match:
                     filename = filename_match.group(1)
-            
+
             # Determine save path with better defaults for LLM environments
             if download_path:
                 save_path = Path(download_path)
@@ -3358,13 +3419,13 @@ async def download_artifact(artifact_id: str, download_path: str = "", auth_toke
             else:
                 # Use configurable default download path
                 save_path = Path(DEFAULT_DOWNLOAD_PATH) / filename
-            
+
             # Try to write file content with fallback handling
             try:
                 with open(save_path, "wb") as f:
                     f.write(response.content)
-                
-                logger.info(f"✅ Successfully downloaded artifact {artifact_id} to {save_path}")
+
+                logger.info(f"Successfully downloaded artifact {artifact_id} to {save_path}")
                 return {
                     "success": True,
                     "message": f"Successfully downloaded artifact to '{save_path}'",
@@ -3373,11 +3434,11 @@ async def download_artifact(artifact_id: str, download_path: str = "", auth_toke
                 }
             except (OSError, PermissionError) as e:
                 # If writing fails (read-only filesystem), return content instead
-                logger.warning(f"⚠️ Could not write file {save_path}: {e}, returning content instead")
+                logger.warning(f"Could not write file {save_path}: {e}, returning content instead")
                 try:
                     # Try to decode as text for better display
                     content_text = response.content.decode('utf-8')
-                    logger.info(f"✅ Downloaded artifact {artifact_id} content as text (filesystem readonly)")
+                    logger.info(f"Downloaded artifact {artifact_id} content as text (filesystem readonly)")
                     return {
                         "success": True,
                         "message": f"Downloaded artifact content (could not write to file: {e})",
@@ -3390,128 +3451,146 @@ async def download_artifact(artifact_id: str, download_path: str = "", auth_toke
                     # Binary content - return as base64
                     import base64
                     content_b64 = base64.b64encode(response.content).decode('ascii')
-                    logger.info(f"✅ Downloaded artifact {artifact_id} content as base64 (filesystem readonly)")
+                    logger.info(f"Downloaded artifact {artifact_id} content as base64 (filesystem readonly)")
                     return {
                         "success": True,
                         "message": f"Downloaded binary artifact content (could not write to file: {e})",
-                        "file_path": "binary_content_returned_due_to_readonly_filesystem", 
+                        "file_path": "binary_content_returned_due_to_readonly_filesystem",
                         "size_bytes": len(response.content),
                         "content_base64": content_b64,
                         "warning": f"File system write failed: {e}"
                     }
         else:
-            error_msg = f"Download failed: HTTP {response.status_code}"
             if response.status_code == 401:
-                error_msg = "Authentication failed - invalid token"
+                return get_error_response("no_auth")
             elif response.status_code == 404:
-                error_msg = f"Artifact {artifact_id} not found or access denied"
-            
-            logger.error(f"❌ Download failed: {error_msg}")
-            return {"success": False, "error": error_msg}
-            
+                return create_error_response(
+                    f"Artifact {artifact_id} not found",
+                    "The artifact may have been deleted or you don't have access",
+                    "NOT_FOUND"
+                )
+            else:
+                return create_error_response(
+                    f"Download failed: HTTP {response.status_code}",
+                    "Check your network connection and API configuration",
+                    "API_ERROR"
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        logger.error(f"❌ download_artifact error: {str(e)}")
-        print(f"❌ MCP ERROR in download_artifact: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to download artifact: {str(e)}"
-        }
+        logger.error(f"download_artifact failed: {str(e)}")
+        return create_error_response(
+            f"Failed to download artifact: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def delete_artifact(artifact_id: str, auth_token: str = "", current_node_id: str = "") -> dict:
     """Delete an artifact and its associated file."""
+    logger.info(f"delete_artifact called - artifact_id={artifact_id}")
+
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    if not artifact_id:
+        return create_error_response(
+            "artifact_id is required",
+            "Provide the ID of the artifact you want to delete",
+            "MISSING_ARTIFACT_ID"
+        )
+
+    # FastGTD API endpoint for deleting artifacts
+    url = f"{FASTGTD_API_URL}/artifacts/{artifact_id}"
+
+    # Prepare headers
+    headers = {
+        "Authorization": f"Bearer {auth_token}"
+    }
+
     try:
-        logger.info(f"🗑️ delete_artifact CALLED - artifact_id={artifact_id}")
-        
-        print("🗑️ MCP TOOL: delete_artifact")
-        print(f"   Artifact ID: {artifact_id}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        if not auth_token:
-            return {"success": False, "error": "No authentication token available"}
-        
-        if not artifact_id:
-            return {"success": False, "error": "artifact_id is required"}
-        
-        # FastGTD API endpoint for deleting artifacts
-        url = f"{FASTGTD_API_URL}/artifacts/{artifact_id}"
-        
-        # Prepare headers
-        headers = {
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
-        import httpx
-        async with httpx.AsyncClient() as client:
-            response = await client.delete(url, headers=headers)
-        
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.delete(url, headers=headers, timeout=HTTP_TIMEOUT)
+
         if response.status_code == 204:
-            logger.info(f"✅ Successfully deleted artifact {artifact_id}")
+            logger.info(f"Successfully deleted artifact {artifact_id}")
             return {
                 "success": True,
                 "message": f"Successfully deleted artifact {artifact_id}"
             }
         else:
-            error_msg = f"Delete failed: HTTP {response.status_code}"
             if response.status_code == 401:
-                error_msg = "Authentication failed - invalid token"
+                return get_error_response("no_auth")
             elif response.status_code == 404:
-                error_msg = f"Artifact {artifact_id} not found or access denied"
-            
-            logger.error(f"❌ Delete failed: {error_msg}")
-            return {"success": False, "error": error_msg}
-            
+                return create_error_response(
+                    f"Artifact {artifact_id} not found",
+                    "The artifact may have been deleted or you don't have access",
+                    "NOT_FOUND"
+                )
+            else:
+                return create_error_response(
+                    f"Delete failed: HTTP {response.status_code}",
+                    "Check your network connection and API configuration",
+                    "API_ERROR"
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        logger.error(f"❌ delete_artifact error: {str(e)}")
-        print(f"❌ MCP ERROR in delete_artifact: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to delete artifact: {str(e)}"
-        }
+        logger.error(f"delete_artifact failed: {str(e)}")
+        return create_error_response(
+            f"Failed to delete artifact: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 async def list_node_artifacts(node_id: str, limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, auth_token: str = "", current_node_id: str = "") -> dict:
     """List all artifacts attached to a specific node."""
-    try:
-        logger.info(f"📋 list_node_artifacts CALLED - node_id={node_id}")
-        
-        print("📋 MCP TOOL: list_node_artifacts")
-        print(f"   Node ID: {node_id}")
-        print(f"   Auth token present: {bool(auth_token)}")
-        
-        # Get auth token if not provided
-        if not auth_token:
-            auth_token = await get_auth_token()
-        
-        if not auth_token:
-            return {"success": False, "error": "No authentication token available"}
-        
-        if not node_id:
-            return {"success": False, "error": "node_id is required"}
-        
-        # FastGTD API endpoint for listing node artifacts
-        url = f"{FASTGTD_API_URL}/artifacts/node/{node_id}"
-        
-        # Prepare headers
-        headers = {
-            "Authorization": f"Bearer {auth_token}"
-        }
-        
-        # Prepare pagination parameters
-        params = {
-            "limit": min(limit, MAX_PAGE_SIZE),
-            "offset": max(offset, 0)
-        }
+    logger.info(f"list_node_artifacts called - node_id={node_id}")
 
-        import httpx
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=headers, params=params)
-        
+    # Get auth token if not provided
+    if not auth_token:
+        auth_token = await get_auth_token()
+
+    if not auth_token:
+        return get_error_response("no_auth")
+
+    if not node_id:
+        return get_error_response("node_id_required")
+
+    # FastGTD API endpoint for listing node artifacts
+    url = f"{FASTGTD_API_URL}/artifacts/node/{node_id}"
+
+    # Prepare headers
+    headers = {
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Prepare pagination parameters
+    params = {
+        "limit": min(limit, MAX_PAGE_SIZE),
+        "offset": max(offset, 0)
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+
         if response.status_code == 200:
             artifacts_data = response.json()
-            logger.info(f"✅ Found {artifacts_data.get('total', 0)} artifacts for node {node_id}")
+            logger.info(f"Found {artifacts_data.get('total', 0)} artifacts for node {node_id}")
             return {
                 "success": True,
                 "message": f"Found {artifacts_data.get('total', 0)} artifact(s) for node {node_id}",
@@ -3519,22 +3598,34 @@ async def list_node_artifacts(node_id: str, limit: int = DEFAULT_PAGE_SIZE, offs
                 "total": artifacts_data.get('total', 0)
             }
         else:
-            error_msg = f"List failed: HTTP {response.status_code}"
             if response.status_code == 401:
-                error_msg = "Authentication failed - invalid token"
+                return get_error_response("no_auth")
             elif response.status_code == 404:
-                error_msg = f"Node {node_id} not found or access denied"
-            
-            logger.error(f"❌ List failed: {error_msg}")
-            return {"success": False, "error": error_msg}
-            
+                return create_error_response(
+                    f"Node {node_id} not found",
+                    "The node may have been deleted or you don't have access. Use search_nodes() to find available nodes",
+                    "NOT_FOUND"
+                )
+            else:
+                return create_error_response(
+                    f"List failed: HTTP {response.status_code}",
+                    "Check your network connection and API configuration",
+                    "API_ERROR"
+                )
+
+    except httpx.TimeoutException:
+        return create_error_response(
+            "Request timed out",
+            "The FastGTD API is not responding. Check your FASTGTD_API_URL and network connection",
+            "TIMEOUT"
+        )
     except Exception as e:
-        logger.error(f"❌ list_node_artifacts error: {str(e)}")
-        print(f"❌ MCP ERROR in list_node_artifacts: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Failed to list node artifacts: {str(e)}"
-        }
+        logger.error(f"list_node_artifacts failed: {str(e)}")
+        return create_error_response(
+            f"Failed to list node artifacts: {str(e)}",
+            "Check your network connection and API configuration",
+            "EXCEPTION"
+        )
 
 # Tool handlers mapping
 TOOL_HANDLERS = {

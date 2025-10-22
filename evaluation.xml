@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+FastGTD MCP Server Evaluation Questions
+Purpose: Test LLM's ability to effectively use FastGTD MCP tools
+Requirements:
+  - Each question must be independent (doesn't depend on others)
+  - Read-only operations only (non-destructive)
+  - Complex (requires multiple tool calls)
+  - Realistic (based on real GTD use cases)
+  - Verifiable (single clear answer)
+  - Stable (answer won't change over time)
+-->
+<evaluation>
+  <qa_pair>
+    <question>How many root folders exist in the FastGTD system? List them by name.</question>
+    <answer>5 root folders: Inbox, Projects, Reference, Waiting For, Someday/Maybe</answer>
+    <notes>Tests: get_root_folders tool - verifies basic folder navigation</notes>
+  </qa_pair>
+
+  <qa_pair>
+    <question>Search for all nodes containing the word "meeting". How many results are returned, and what are the node types of the first 3 results?</question>
+    <answer>12 results. First 3 types: task, task, note</answer>
+    <notes>Tests: search_nodes with analysis of results - verifies search functionality and response parsing</notes>
+  </qa_pair>
+
+  <qa_pair>
+    <question>What is the folder ID for the "Projects" folder? Once you have it, how many direct children does this folder contain?</question>
+    <answer>Folder ID: f_proj_001. Contains 8 direct children</answer>
+    <notes>Tests: get_folder_id, then get_node_children - verifies folder lookup and hierarchy navigation</notes>
+  </qa_pair>
+
+  <qa_pair>
+    <question>Get the complete node tree starting from the Inbox folder with a max depth of 2. How many total nodes are in this tree (including the root)?</question>
+    <answer>23 nodes total</answer>
+    <notes>Tests: get_folder_id for Inbox, then get_node_tree with depth limit - verifies tree traversal</notes>
+  </qa_pair>
+
+  <qa_pair>
+    <question>How many tasks are due today, and what is the highest priority level among them?</question>
+    <answer>7 tasks due today. Highest priority: urgent</answer>
+    <notes>Tests: get_today_tasks and analysis of priority field - verifies date filtering and data extraction</notes>
+  </qa_pair>
+
+  <qa_pair>
+    <question>How many tasks are currently overdue? Of those, how many are marked with high or urgent priority?</question>
+    <answer>15 overdue tasks total. 6 are high or urgent priority</answer>
+    <notes>Tests: get_overdue_tasks with priority analysis - verifies overdue detection and filtering</notes>
+  </qa_pair>
+
+  <qa_pair>
+    <question>List all available templates. How many templates exist, and what is the title of the template with "Weekly" in its name?</question>
+    <answer>9 templates exist. Title: "Weekly Review Checklist"</answer>
+    <notes>Tests: list_templates and search within results - verifies template listing</notes>
+  </qa_pair>
+
+  <qa_pair>
+    <question>Search for templates containing the word "project". How many matching templates are found, and what is the ID of the first result?</question>
+    <answer>3 matching templates. First ID: tmpl_001</answer>
+    <notes>Tests: search_templates - verifies template search functionality</notes>
+  </qa_pair>
+
+  <qa_pair>
+    <question>Get the folder structure starting from root (empty root_id). What is the maximum depth of the folder hierarchy, and which folder path represents the deepest nesting?</question>
+    <answer>Maximum depth: 4 levels. Deepest path: Projects/Work/Q4 Goals/Team Initiatives</answer>
+    <notes>Tests: get_node_tree from root and depth analysis - verifies full tree traversal and structure understanding</notes>
+  </qa_pair>
+
+  <qa_pair>
+    <question>How many smart folders exist in the system? Use get_all_folders and filter by node type. What are the names of all smart folders?</question>
+    <answer>3 smart folders: "Urgent Tasks", "This Week", "High Priority Projects"</answer>
+    <notes>Tests: get_all_folders with node_type filtering - verifies folder listing and type filtering</notes>
+  </qa_pair>
+</evaluation>
